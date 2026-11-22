@@ -1,0 +1,87 @@
+OpenBeken no hub JM-SMWG01-MINI V2.6
+==================================
+
+Configuração aplicada e verificada em 22/11/2026 no OpenBeken 1.18.321
+(OpenRTL8720D). A placa usa WBRG1 para Wi-Fi/BLE e ZS3L para Zigbee.
+
+Este registro descreve a instalação testada, com GPIOs e Startup Command
+configurados separadamente. Para novas placas, use os scripts de
+src/openbeken-config conforme o README na raiz do projeto.
+
+Configuração dos GPIOs
+----------------------
+
+No console do OpenBeken, executar uma linha por vez:
+
+SetPinRole 25 WifiLED
+SetPinChannel 25 1
+SetPinRole 54 LED
+SetPinChannel 54 2
+SetPinRole 55 Btn
+SetPinChannel 55 3
+
+PA25 (25) é o LED vermelho de Wi-Fi. PB22 (54) é o LED azul ligado ao
+canal 2. PB23 (55) é o botão. Um clique curto alterna o canal 3, que
+fica disponível para automações. Para abrir a janela de pareamento por esse
+clique, o controlador Zigbee precisa receber o evento e permitir a entrada.
+
+Segurar o botão por 5 segundos aciona o comando nativo OpenAP. Copiar
+também o wifi-recovery.bat para o LittleFS. O hotspot do hub abre no
+endereço 192.168.4.1. Se a configuração não for concluída, o script
+programa um reinício após 5 minutos para tentar a rede Wi-Fi salva.
+O painel exige o login de administração. A regra foi gravada no hub.
+O teste físico de abertura do hotspot pelo botão ainda está pendente.
+O atalho de reset de fábrica está desativado.
+
+Inicialização
+-------------
+
+Em Startup Command, salvar a seguinte linha:
+
+startDriver uarttcp 115200 512 2 1
+
+O driver abre a porta TCP 8888. Usa UART0 a 115200 baud com RTS/CTS
+entre WBRG1 e ZS3L. O canal 2 segue a conexão TCP do controlador.
+O LED azul indica essa conexão. O estado de pareamento é gerenciado
+pelo controlador Zigbee.
+
+Salvar o autoexec.bat desta pasta no LittleFS do OpenBeken e reiniciar
+o hub. O script inicia a varredura BLE e a API compatível com ESPHome
+na porta 6053. Ele espera oito segundos pela inicialização do rádio BLE.
+
+A UART0 usa PA16 a PA19. Os GPIOs PA28 e PB4 ficaram sem função no
+OpenBeken. Seus sinais de reset e boot do ZS3L ainda precisam de
+confirmação por continuidade. O firmware original do ZS3L foi preservado.
+
+Integração local
+----------------
+
+ZHA pode acessar a ponte como Silicon Labs EZSP em socket://IP_DO_HUB:8888.
+O rádio respondeu em EZSP 7, EmberZNet 6.5.5.0 build 432. Para o driver
+ember atual do Zigbee2MQTT, o firmware do rádio deve estar na lista de
+versões compatíveis. A lista oficial está em
+https://www.zigbee2mqtt.io/guide/adapters/emberznet.html
+
+A integração ESPHome do Home Assistant pode acessar o proxy BLE em
+IP_DO_HUB:6053. Este firmware fornece encaminhamento de anúncios BLE.
+
+Verificação na unidade
+----------------------
+
+Após o reinício, a API confirmou os papéis dos três GPIOs e o início
+automático da varredura BLE. O LED vermelho foi observado aceso fixo com
+Wi-Fi conectado. Um clique físico alterou o canal 3 de 0 para 1.
+
+Uma consulta EZSP confirmou a versão do rádio. O canal 2 passou de 0
+para 1 ao conectar e voltou a 0 após desconectar. Durante a consulta,
+um cliente de teste da API ESPHome recebeu 64 quadros de anúncios BLE.
+
+A primeira consulta EZSP retornou NO_NETWORK. Depois, o controlador local
+Bellows/zigpy formou uma rede de teste no canal Zigbee 11. A tomada
+pareou, concluiu a entrevista e respondeu à leitura do atributo On/Off
+do cluster 0x0006 com o estado desligado. A mesma leitura funcionou
+depois de reconectar o controlador. A janela de pareamento foi fechada.
+A rede de teste ficou no rádio. A tomada não recebeu comando de ligar
+ou desligar. A integração na instância final do Home Assistant não foi
+testada. O cliente local registrou avisos ao encerrar a conexão após
+as leituras bem-sucedidas.

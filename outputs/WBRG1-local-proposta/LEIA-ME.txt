@@ -1,0 +1,28 @@
+Proposta inicial para JM-SMWG01-MINI V2.6 / WBRG1 + ZS3L
+
+Estado: preparacao local, nao testada na placa e nao gravada.
+
+Base candidata: OpenBeken 1.18.321, imagem OpenRTL8720D_1.18.321.bin.
+SHA256 publicado e verificado: 7623edaaf78443efce21bbbde375f53660befa12d8c3aa8ff5165be7163d242a
+A imagem foi apenas baixada para work. Nao foi alterada nem gravada.
+
+O autoexec.bat desta pasta e um script INTERNO do OpenBeken, nao um programa Windows.
+Ele propoe iniciar a ponte UART0/TCP na porta 8888, com 115200 baud e RTS/CTS.
+O valor -1 evita reservar um canal para indicador de conexao.
+A proposta nao aciona GPIO de reset nem de boot do Zigbee.
+
+Objetivo do primeiro teste: manter o firmware do ZS3L e verificar sua resposta EZSP e sua versao.
+Nao usar a rotina de flash do ZS3L nem executar scan-reset antes de confirmar o hardware.
+O exemplo dzerik usa reset PB13 (indice 45). Nosso dump aponta PA28 (indice 28).
+Boot-select PB4 (indice 36). Confirmar as ligacoes por continuidade antes de usar esses controles.
+
+Dependencia: esta proposta transforma o gateway numa ponte de radio para um controlador local externo, como Home Assistant/ZHA ou Zigbee2MQTT. O script nao implementa um sistema completo de automacoes autonomas na placa. Tambem nao garante preservar o gateway Bluetooth, o aplicativo Tuya ou a rede Zigbee existente.
+
+Antes da gravacao: confirmar a escolha do controlador, pinagem UART/RTS/CTS, metodo e mapa de gravacao/recuperacao para WBRG1, preservacao da calibracao e configuracao Wi-Fi. O backup original de 8 MiB ja foi validado com duas leituras identicas. A flash interna do ZS3L continua sem backup.
+
+Referencias:
+https://github.com/openshwprojects/OpenBK7231T_App/releases/tag/1.18.321
+https://github.com/openshwprojects/OpenBK7231T_App/blob/main/src/driver/drv_uart_tcp.c
+https://github.com/openshwprojects/OpenBK7231T_App/blob/main/src/hal/realtek/rtl8720d/hal_uart_rtl8720d.c
+https://github.com/dzerik/zs3l-ncp-flash-over-network
+https://pvvx.github.io/RSH-GW018_DM/

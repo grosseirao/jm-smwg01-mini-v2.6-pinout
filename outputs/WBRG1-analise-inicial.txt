@@ -1,0 +1,81 @@
+Análise inicial do firmware WBRG1 — 21/11/2026
+
+O backup de 8.388.608 bytes foi obtido duas vezes, com resultado idêntico.
+SHA-256: 1cc7751a57ae0ca369bf17c6839b3af1f3879d4e5869feb90506b0f8dc542f66
+Arquivo: WBRG1-firmware-original-8MB.bin
+Esta análise foi feita nos arquivos locais. Não houve nova gravação da placa.
+
+1. Identidade e arquitetura
+
+O dump contém o identificador 8721csm_bt_zg_gw (offset 0x36aa68), a versão 1.8.2 (0x36a580) e a data Mar 29 2024 (0x36aa5c). O identificador do SDK em 0x36a9bc é TuyaOS2.3.2_ty_iot_gw_wr_wf_sdk_3.1.8-beta.57_rtl8720dn_mini_muli_gw_config_uf_1.0.70-beta.15. Esses dados concordam com os logs capturados no equipamento.
+
+Foram encontrados cabeçalhos de imagens Realtek, código Thumb e segmentos com endereços de carga de KM0, KM4 e PSRAM. Este é firmware de microcontrolador. Caminhos /root/workspace_temp encontrados nas strings são caminhos do ambiente de compilação; não demonstram a existência de Linux, SSH ou shell na placa.
+
+2. Organização verificada do backup
+
+Os offsets abaixo são posições no arquivo da flash, não endereços para escrever:
+
+0x006000: cabeçalho de código KM0; payload 0x17550 bytes, destino 0x0c000020.
+0x020000: bootloader KM4 Tuya; payload 0x40e0 bytes, destino 0x0e000020.
+0x0242c0: início de um fluxo XZ válido. Foram consumidos 1.439.944 bytes e produzidos 2.498.560 bytes. O conteúdo descompactado é exatamente igual à região do arquivo iniciada em 0x2a8040, com o mesmo comprimento.
+0x286000: outra imagem KM0; payload idêntico ao da região 0x006000.
+0x2a0000: outro bootloader KM4; payload idêntico ao da região 0x020000.
+0x2a8040: cabeçalho da aplicação KM4. Payload em 0x2a8060, comprimento 0x135970, destino 0x0e008060.
+0x3dd9d0: cabeçalho de dados inicializados; payload 0x5000 bytes, destino 0x10013000.
+0x3e29f0: cabeçalho de segmento PSRAM; payload 0x127400 bytes, destino 0x02000020.
+
+A disposição e os textos do bootloader são compatíveis com imagens de execução e atualização. A função exata de cada slot e o seletor de boot não foram completamente reconstruídos. Não se deve concluir que as regiões de configuração no final da memória possam ser apagadas.
+
+3. Comunicação com o Zigbee
+
+O firmware contém um host Silicon Labs EZSP/ASH: há mensagens de negociação de versão EZSP em 0x39e804 e rotinas/logs ASH em 0x3ac038, 0x3ac114 e 0x3ac268. O texto de 0x39e898 informa boot UART com controle de fluxo; isso também apareceu no log real.
+
+Isso sustenta a hipótese de usar o ZS3L como rádio Zigbee para um controlador externo. Não informa por si só a versão atual do firmware do rádio, os parâmetros completos da UART, nem prova compatibilidade com versões atuais de ZHA ou Zigbee2MQTT.
+
+Na análise local do código Thumb com Ghidra:
+- FUN_0e02e13c inicializa os identificadores GPIO 0x1c e 0x24 e coloca 0x24 em nível alto. O log associado imprime a porta B e o número 4. Isso associa 0x24 a PB4 e concorda com o log capturado.
+- FUN_0e02e1a8 chama a mesma função de escrita GPIO com 0x1c e nível 0, faz uma espera com argumento 100 e depois escreve nível 1.
+- Outra rotina, FUN_0e035d5c, explicita a codificação de porta: bit 0x20 distingue A/B e os cinco bits baixos contêm o número do pino. Logo, 0x1c corresponde a PA28.
+
+Inferência forte: PA28 é o reset do rádio nesta imagem, e PB4 é o controle de boot. A conexão física PA28 -> RST do ZS3L ainda deve ser confirmada por continuidade antes de comandar esses sinais. A unidade de tempo da espera e as condições completas de entrada no bootloader Zigbee não foram verificadas.
+
+4. Controle local já existente no firmware original
+
+Existem referências explícitas a funcionalidades LAN, inclusive para subdispositivos:
+- lan.enable, offset 0x379cd8;
+- gw_subdev_lansrv_enable, offset 0x3bf0b4;
+- lan.disable, offset 0x3c07ac;
+- funções de leitura de localkey em 0x3ba414/0x3ba42c;
+- configuração de compilação com ENABLE_LAN_ENCRYPTION:1, ENABLE_LAN_LINKAGE:1 e ENABLE_LAN_DEV:1, offset 0x3c623d.
+
+Também existem endereços HTTP/HTTPS/MQTT da Tuya a partir de 0x3d6844. A opção ENABLE_CLOUD_OPERATION:0 aparece no mesmo texto de compilação, mas NÃO prova independência da nuvem: o log mostra inicialização Tuya e o binário contém os mecanismos de conexão e autenticação.
+
+Conclusão: é plausível testar controle LAN preservando o firmware original, desde que se obtenham os parâmetros e as chaves necessários e se valide o comportamento dos subdispositivos. Não foi demonstrado que pareamento, reinício sem internet e todas as automações funcionem sem Tuya. Não foi extraída uma chave local utilizável nesta análise.
+
+5. Caminhos para o objetivo do usuário
+
+A. Preservar o firmware e testar uma integração LAN. Tem menor impacto no equipamento e pode preservar mais funções, mas a dependência de provisionamento e o suporte aos subdispositivos precisam de teste real. Não equivale automaticamente a independência completa da Tuya.
+
+B. Substituir o software do WBRG1 por uma ponte Wi-Fi/UART local (por exemplo, OpenBeken) e usar o ZS3L com Home Assistant/ZHA ou Zigbee2MQTT. Há projeto público para esse mesmo conjunto de módulos. O primeiro teste deveria preservar o firmware do ZS3L e consultar sua versão/protocolo pela ponte; uma atualização do rádio só deve ser considerada se necessária. A compatibilidade da revisão desta placa ainda deve ser validada.
+
+A opção B usa um controlador local externo; não mantém automaticamente o aplicativo Tuya, as funções Bluetooth ou todas as funções autônomas do gateway original. Se a exigência for operar tudo somente na própria placa, será necessário avaliar desenvolvimento de aplicação local específica.
+
+6. Limites e próximos passos
+
+O dump é da flash do WBRG1. Não é backup da flash interna do ZS3L. Não foi identificado um fluxo GBL não comprimido usando a assinatura padrão no dump; isso não exclui outras formas de armazenar atualização de rádio.
+
+A varredura Binwalk do REA não pôde ser usada porque requer Linux. O adaptador REA/Ghidra disponível no Windows rejeitou o formato ARM bruto. A análise continuou com Python e o Ghidra 12.1.4 instalado, por linha de comando local. O Ghidra recebeu apenas o segmento KM4 extraído, com mapeamento 0x0e008060 e linguagem ARM:LE:32:v8-m. A análise automática atingiu o limite de 90 segundos, e nem todos os segmentos e chamadas indiretas foram resolvidos. As rotinas citadas são evidência estática parcial, não execução observada.
+
+Próximas verificações concretas:
+- confirmar eletricamente a ligação PA28/RST e os sinais UART/RTS/CTS entre os módulos;
+- identificar a versão EZSP/NCP real do ZS3L sem apagar sua memória;
+- definir se haverá controlador local externo;
+- testar controle LAN original ou preparar uma ponte local com configuração específica, conservando o backup de fábrica;
+- antes de qualquer gravação, revisar a imagem exata, o mapa de gravação e o procedimento de recuperação.
+
+Referências externas para continuidade (não substituem as evidências deste dump):
+https://github.com/openshwprojects/OpenBK7231T_App
+https://github.com/dzerik/zs3l-ncp-flash-over-network
+https://pvvx.github.io/RSH-GW018_DM/
+
+Arquivos de trabalho: firmware-strings.json, firmware-focus.txt, firmware-gpio.txt e projeto Ghidra em work/ghidra-analysis. As evidências estruturais resumidas estão em WBRG1-evidencias-analise.json.

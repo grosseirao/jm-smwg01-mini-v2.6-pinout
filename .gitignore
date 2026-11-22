@@ -1,0 +1,14 @@
+/work/
+__pycache__/
+*.py[cod]
+/outputs/*
+!/outputs/*.sha256
+!/outputs/Pinagem-JM-SMWG01-MINI-V2.6.md
+!/outputs/WBRG1-analise-inicial.txt
+!/outputs/OpenBeken-configuracao-validada/
+!/outputs/WBRG1-local-proposta/
+
+# Third-party code: linked in src/TERCEIROS.md, kept only locally
+/src/RTLNFlasher.cs
+/src/openbeken-source/
+/src/zs3l-project/flash_zs3l.py

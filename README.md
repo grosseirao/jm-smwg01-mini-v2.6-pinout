@@ -2,6 +2,69 @@
 
 Placa identificada pela inscrição `JM-SMWG01-MINI`, revisão `V2.6`, data `2024/06/25`. O módulo branco **ZS3L (EFR32MG21)** é o rádio Zigbee. O módulo azul **WBRG1 (RTL8721CSM)** é o módulo Wi‑Fi/Bluetooth.
 
+## Configuração do OpenBeken
+
+O WBRG1 roda o **OpenBeken 1.18.321**, na variante OpenRTL8720D. O ZS3L conserva o firmware **EmberZNet 6.5.5.0 build 432**, com protocolo EZSP 7. Os [scripts do OpenBeken](src/openbeken-config/) ficam em `src`. O [registro dos testes](outputs/OpenBeken-configuracao-validada/LEIA-ME.txt) fica em `outputs`.
+
+### LEDs e botão
+
+| Componente | GPIO | Configuração | Comportamento |
+|---|---|---|---|
+| LED vermelho | PA25 (25) | `WifiLED`, canal 1 | Aceso fixo com o Wi-Fi conectado. Pisca durante a conexão. |
+| LED azul | PB22 (54) | `LED`, canal 2 | Aceso enquanto um controlador está conectado à ponte Zigbee por TCP. |
+| Botão | PB23 (55) | `Btn`, canal 3 | O clique curto alterna o canal 3. Vincular esse evento à janela de pareamento ainda depende do controlador Zigbee. |
+
+Segurar o botão por **5 segundos** está configurado para chamar o hotspot nativo do OpenBeken. O painel fica em `http://192.168.4.1` e exige o login de administração. Em **Config → WiFi & Web**, é possível configurar a nova rede. O script programa um reinício após **5 minutos** para tentar a rede salva caso a configuração não seja concluída. A regra foi gravada no hub e a abertura do hotspot pelo botão físico ainda precisa ser testada. O gesto de reset de fábrica está desativado.
+
+### Imagem com a configuração embutida
+
+Os scripts podem ir para a placa junto com o firmware, já dentro do LittleFS do OpenBeken. Assim não é preciso enviá-los pela interface web.
+
+1. Gere a imagem do LittleFS. Ela leva o `autoexec.bat` e o `wifi-recovery.bat` desta pasta:
+   ```powershell
+   python -m pip install "littlefs-python==0.12.0"
+   python src\openbeken-config\build_lfs_image.py --output-dir outputs
+   ```
+   O resultado é `outputs\OpenRTL8720D-lfs-8MB-at-0x3C6000.bin`.
+2. Grave no WBRG1, na mesma sessão do gravador:
+
+   | Arquivo | Endereço |
+   |---|---|
+   | `OpenRTL8720D_1.18.321.bin` | `0x000000` |
+   | `OpenRTL8720D-lfs-8MB-at-0x3C6000.bin` | `0x3C6000` |
+
+   O gravador usado foi o `RTLNFlasher` do BK7231GUIFlashTool. Ele grava em endereço escolhido. Os links do código de terceiros estão em [src/TERCEIROS.md](src/TERCEIROS.md).
+
+   Não junte os dois num arquivo único de 8 MiB. Entre 0x116000 e 0x3C6000 ficam a configuração do OpenBeken (Wi-Fi e login) e dados do sistema.
+3. No primeiro boot, o `autoexec.bat` já configura os LEDs e o botão e inicia a ponte Zigbee e o proxy BLE. Só falta configurar o Wi-Fi da unidade pelo hotspot.
+
+Como o gerador replica o OpenBeken 1.18.321 (`src/littlefs/our_lfs.c`):
+- No RTL8720D com flash acima de 2 MiB, o LittleFS vai de 0x3C6000 até o fim da flash. Em 8 MiB são 0x43A000 bytes, ou 1082 blocos de 4 KiB.
+- Parâmetros: `read/prog_size` 1, `cache` 16, `lookahead` 16 e `block_cycles` 500.
+- O OpenBeken usa o littlefs 2.4, que só lê o **formato de disco 2.0**. O gerador fixa essa versão, porque a biblioteca do Python gravaria a 2.1 por padrão.
+- O `lfs_mount` confere o número de blocos no superbloco. Com outro tamanho, o OpenBeken reformata a área e os scripts somem. Para outra capacidade de flash, use `--flash-mb`.
+- O arquivo vai só até o último bloco usado pelo littlefs. O resto da área pode continuar com dados antigos, porque o littlefs só lê os blocos que estão na árvore dele.
+
+O gerador remove o BOM e troca CRLF por LF. Ele recusa scripts que não sejam ASCII.
+
+Estado: a imagem foi montada de novo com os mesmos parâmetros e os dois arquivos conferiram. A gravação nesse endereço e o boot com ela **ainda não foram testados no hub**.
+
+### Como aplicar em outra placa V2.6 pela interface web
+
+1. Instale o **OpenRTL8720D 1.18.321** no WBRG1. Acesse o painel do OpenBeken e configure o Wi-Fi da nova unidade.
+2. Copie [autoexec.bat](src/openbeken-config/autoexec.bat) e [wifi-recovery.bat](src/openbeken-config/wifi-recovery.bat) para a raiz do LittleFS pela interface web.
+3. Reinicie o hub. O `autoexec.bat` configura os dois LEDs e o botão, inicia a ponte Zigbee na porta **8888** com RTS/CTS e inicia o proxy BLE na porta **6053**. O `wifi-recovery.bat` roda quando o botão chama o hotspot.
+
+Se estiver atualizando uma unidade configurada pelo procedimento anterior, remova a linha `startDriver uarttcp 115200 512 2 1` de **Startup Command** para a ponte ser iniciada uma só vez pelo novo `autoexec.bat`.
+
+A imagem padrão do OpenBeken e os scripts são instalados em etapas separadas. As credenciais e os dispositivos pareados pertencem a cada unidade.
+
+### Validação e integração
+
+Uma tomada Zigbee pareou pelo controlador local Bellows/zigpy e respondeu à leitura de estado, inclusive depois de reconectar o controlador. Um cliente de teste também recebeu anúncios BLE pela API ESPHome enquanto a ponte Zigbee estava em uso.
+
+A integração na instância final do Home Assistant ainda precisa ser testada. Para o ZHA, o endereço da ponte é `socket://IP_DO_HUB:8888` com rádio **Silicon Labs EZSP**. Para o proxy BLE, a integração é **ESPHome**, em `IP_DO_HUB:6053`.
+
 ## P1 na placa fotografada
 
 Olhe a **face dos componentes**, com o **USB-C para cima**, o ZS3L à esquerda e o WBRG1 à direita. P1 é a fileira de quatro furos logo abaixo do WBRG1, acima de P2, junto à inscrição **烧录** (gravação). Conte da esquerda para a direita.
