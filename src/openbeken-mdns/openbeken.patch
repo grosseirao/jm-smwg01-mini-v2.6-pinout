@@ -1,0 +1,258 @@
+diff --git a/src/driver/drv_esphome_api.c b/src/driver/drv_esphome_api.c
+index 390731a..a757df9 100644
+--- a/src/driver/drv_esphome_api.c
++++ b/src/driver/drv_esphome_api.c
+@@ -89,6 +89,24 @@ static void PB_SendFrame(int client_sock, uint32_t msg_type, uint8_t* payload, u
+ 	}
+ }
+ 
++#if PLATFORM_RTL8720D && ENABLE_DRIVER_MDNS
++extern char *DRV_MDNS_RTL8720D_Hostname(void);
++#endif
++
++// ESPHome uses the mDNS host label as the node name. Home Assistant passes
++// the discovered name as expected_name and rejects a different HelloResponse.
++static const char *ESPHome_API_GetNodeName(void)
++{
++#if PLATFORM_RTL8720D && ENABLE_DRIVER_MDNS
++	const char *hostname = DRV_MDNS_RTL8720D_Hostname();
++	if(hostname && *hostname)
++	{
++		return hostname;
++	}
++#endif
++	return CFG_GetDeviceName();
++}
++
+ void ESPHome_API_Send_HelloResponse(int client_sock)
+ {
+ 	uint8_t payload[256];
+@@ -96,7 +114,7 @@ void ESPHome_API_Send_HelloResponse(int client_sock)
+ 	pb_encode_varint_field(&ptr, 1, 1); // API Version Major
+ 	pb_encode_varint_field(&ptr, 2, 9); // API Version Minor
+ 	pb_encode_string_field(&ptr, 3, "OpenBeken"); // Server Info
+-	pb_encode_string_field(&ptr, 4, CFG_GetDeviceName());   // Name
++	pb_encode_string_field(&ptr, 4, ESPHome_API_GetNodeName());   // Name
+ 
+ 	PB_SendFrame(client_sock, ESPHOME_MSG_HelloResponse, payload, ptr - payload);
+ }
+@@ -124,7 +142,7 @@ void ESPHome_API_Send_DeviceInfoResponse(int client_sock)
+ 	// Retrieve device MAC address dynamically
+ 	HAL_GetMACStr(mac_str);
+ 
+-	pb_encode_string_field(&ptr, 2, CFG_GetDeviceName()); // Name
++	pb_encode_string_field(&ptr, 2, ESPHome_API_GetNodeName()); // Name
+ 	pb_encode_string_field(&ptr, 3, mac_str); // Mac address
+ 	pb_encode_string_field(&ptr, 4, USER_SW_VER); // Firmware Version
+ 	pb_encode_string_field(&ptr, 6, PLATFORM_MCU_NAME); // Model
+diff --git a/src/driver/drv_mdns.c b/src/driver/drv_mdns.c
+index b29d900..c53a3e7 100644
+--- a/src/driver/drv_mdns.c
++++ b/src/driver/drv_mdns.c
+@@ -4,7 +4,174 @@
+ #include "../obk_config.h"
+ #include "drv_mdns.h"
+ 
+-#if (PLATFORM_BK7231N || PLATFORM_BK7231T || PLATFORM_BK7231U || PLATFORM_BK7238 || PLATFORM_BK7252 || PLATFORM_BK7252N || PLATFORM_W600 || PLATFORM_W800 || PLATFORM_BL602 || PLATFORM_LN882H || PLATFORM_LN8825 || PLATFORM_RTL87X0C || PLATFORM_RTL8196C || PLATFORM_TR6260 || PLATFORM_ECR6600 || PLATFORM_GD32VW553 || (PLATFORM_XRADIO && !PLATFORM_XR872 && !__CONFIG_LWIP_V1) || PLATFORM_ESP8266 || (PLATFORM_ESPIDF && (CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32C2 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C61 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3))) && ENABLE_DRIVER_MDNS
++#if PLATFORM_RTL8720D && ENABLE_DRIVER_MDNS
++
++#include "drv_public.h"
++#include "lwip/netif.h"
++#include "mDNS/mDNS.h"
++
++extern struct netif xnetif[];
++extern int Main_IsOpenAccessPointMode(void);
++
++/* The SDK responder reads this label from mDNSPlatformHostname(). */
++static char mdnsHost[64];
++static u32_t mdnsAddress;
++static DNSServiceRef mdnsZigbeeService;
++static DNSServiceRef mdnsESPHomeService;
++static unsigned int mdnsRetryTicks;
++
++char *DRV_MDNS_RTL8720D_Hostname(void) {
++	return mdnsHost;
++}
++
++static void DRV_MDNS_MakeHostname(char hostname[64], const u8_t mac[6]) {
++	snprintf(hostname, sizeof(mdnsHost), "gateway-zigbee-ble-%02x%02x%02x",
++		(unsigned int)mac[3], (unsigned int)mac[4], (unsigned int)mac[5]);
++}
++
++static void DRV_MDNS_UpdateZigbeeService(const u8_t mac[6]) {
++	if (!DRV_IsRunning("uarttcp")) {
++		if (mdnsZigbeeService) {
++			mDNSDeregisterService(mdnsZigbeeService);
++			mdnsZigbeeService = NULL;
++		}
++		return;
++	}
++	if (mdnsZigbeeService || mdnsRetryTicks) {
++		return;
++	}
++
++	char serialNumber[13];
++	snprintf(serialNumber, sizeof(serialNumber), "%02x%02x%02x%02x%02x%02x",
++		(unsigned int)mac[0], (unsigned int)mac[1], (unsigned int)mac[2],
++		(unsigned int)mac[3], (unsigned int)mac[4], (unsigned int)mac[5]);
++
++	TXTRecordRef txt;
++	TXTRecordCreate(&txt, 0, NULL);
++	if (TXTRecordSetValue(&txt, "radio_type", 4, "ezsp") == 0 &&
++		TXTRecordSetValue(&txt, "serial_number", sizeof(serialNumber) - 1, serialNumber) == 0) {
++		mdnsZigbeeService = mDNSRegisterService(mdnsHost, "_zigbee-coordinator._tcp", "local", 8888, &txt);
++	}
++	TXTRecordDeallocate(&txt);
++	if (!mdnsZigbeeService) {
++		mdnsRetryTicks = 5;
++		addLogAdv(LOG_ERROR, LOG_FEATURE_HTTP, "DRV_MDNS: Zigbee service registration failed");
++	}
++}
++
++/* Home Assistant's ESPHome integration discovers devices through this
++ * service type. It needs the Wi-Fi MAC in "mac"; the instance name must
++ * match the name the API reports in HelloResponse and DeviceInfo. */
++static void DRV_MDNS_UpdateESPHomeService(const u8_t mac[6]) {
++	if (!DRV_IsRunning("ESPHomeAPI")) {
++		if (mdnsESPHomeService) {
++			mDNSDeregisterService(mdnsESPHomeService);
++			mdnsESPHomeService = NULL;
++		}
++		return;
++	}
++	if (mdnsESPHomeService || mdnsRetryTicks) {
++		return;
++	}
++
++	char macText[13];
++	const char *friendlyName = CFG_GetDeviceName();
++	snprintf(macText, sizeof(macText), "%02x%02x%02x%02x%02x%02x",
++		(unsigned int)mac[0], (unsigned int)mac[1], (unsigned int)mac[2],
++		(unsigned int)mac[3], (unsigned int)mac[4], (unsigned int)mac[5]);
++
++	TXTRecordRef txt;
++	TXTRecordCreate(&txt, 0, NULL);
++	if (TXTRecordSetValue(&txt, "mac", sizeof(macText) - 1, macText) == 0 &&
++		TXTRecordSetValue(&txt, "network", 4, "wifi") == 0 &&
++		TXTRecordSetValue(&txt, "platform", strlen(PLATFORM_MCU_NAME), PLATFORM_MCU_NAME) == 0 &&
++		TXTRecordSetValue(&txt, "friendly_name", strlen(friendlyName), friendlyName) == 0) {
++		mdnsESPHomeService = mDNSRegisterService(mdnsHost, "_esphomelib._tcp", "local", 6053, &txt);
++	}
++	TXTRecordDeallocate(&txt);
++	if (!mdnsESPHomeService) {
++		mdnsRetryTicks = 5;
++		addLogAdv(LOG_ERROR, LOG_FEATURE_HTTP, "DRV_MDNS: ESPHome service registration failed");
++	}
++}
++
++static void DRV_MDNS_UpdateServices(const u8_t mac[6]) {
++	DRV_MDNS_UpdateZigbeeService(mac);
++	DRV_MDNS_UpdateESPHomeService(mac);
++}
++
++static void DRV_MDNS_StopResponder(void) {
++	if (mdnsAddress) {
++		/* The SDK deregisters services as part of deinitialization. */
++		mDNSResponderDeinit();
++		mdnsAddress = 0;
++		mdnsZigbeeService = NULL;
++		mdnsESPHomeService = NULL;
++	}
++	mdnsHost[0] = 0;
++}
++
++void DRV_MDNS_Init(void) {
++	DRV_MDNS_Active = 1;
++	mdnsRetryTicks = 0;
++}
++
++void DRV_MDNS_RunEverySecond(void) {
++	struct netif *sta = &xnetif[0];
++	u32_t address = netif_ip4_addr(sta)->addr;
++	char hostname[sizeof(mdnsHost)];
++	TXTRecordRef txt;
++	DNSServiceRef service;
++
++	if (!Main_IsConnectedToWiFi() || Main_IsOpenAccessPointMode() ||
++		!netif_is_up(sta) || !address || sta->hwaddr_len != 6) {
++		DRV_MDNS_StopResponder();
++		mdnsRetryTicks = 0;
++		return;
++	}
++
++	DRV_MDNS_MakeHostname(hostname, sta->hwaddr);
++	if (mdnsRetryTicks) {
++		--mdnsRetryTicks;
++	}
++	if (mdnsAddress == address && !strcmp(mdnsHost, hostname)) {
++		DRV_MDNS_UpdateServices(sta->hwaddr);
++		return;
++	}
++	if (mdnsRetryTicks && !mdnsAddress) {
++		return;
++	}
++	mdnsRetryTicks = 0;
++
++	DRV_MDNS_StopResponder();
++	strcpy(mdnsHost, hostname);
++	if (mDNSResponderInit() != 0) {
++		mdnsHost[0] = 0;
++		mdnsRetryTicks = 5;
++		addLogAdv(LOG_ERROR, LOG_FEATURE_HTTP, "DRV_MDNS: Realtek responder initialization failed");
++		return;
++	}
++
++	TXTRecordCreate(&txt, 0, NULL);
++	service = mDNSRegisterService(mdnsHost, "_http._tcp", "local", 80, &txt);
++	TXTRecordDeallocate(&txt);
++	mdnsAddress = address;
++	if (!service) {
++		addLogAdv(LOG_ERROR, LOG_FEATURE_HTTP, "DRV_MDNS: HTTP service registration failed");
++	}
++	DRV_MDNS_UpdateServices(sta->hwaddr);
++	addLogAdv(LOG_INFO, LOG_FEATURE_HTTP, "DRV_MDNS: Realtek responder started (%s.local)", mdnsHost);
++}
++
++void DRV_MDNS_RunQuickTick(void) {
++}
++
++void DRV_MDNS_Shutdown(void) {
++	DRV_MDNS_StopResponder();
++	DRV_MDNS_Active = 0;
++}
++
++#elif (PLATFORM_BK7231N || PLATFORM_BK7231T || PLATFORM_BK7231U || PLATFORM_BK7238 || PLATFORM_BK7252 || PLATFORM_BK7252N || PLATFORM_W600 || PLATFORM_W800 || PLATFORM_BL602 || PLATFORM_LN882H || PLATFORM_LN8825 || PLATFORM_RTL87X0C || PLATFORM_RTL8196C || PLATFORM_TR6260 || PLATFORM_ECR6600 || PLATFORM_GD32VW553 || (PLATFORM_XRADIO && !PLATFORM_XR872 && !__CONFIG_LWIP_V1) || PLATFORM_ESP8266 || (PLATFORM_ESPIDF && (CONFIG_IDF_TARGET_ESP32 || CONFIG_IDF_TARGET_ESP32C2 || CONFIG_IDF_TARGET_ESP32C3 || CONFIG_IDF_TARGET_ESP32C5 || CONFIG_IDF_TARGET_ESP32C6 || CONFIG_IDF_TARGET_ESP32C61 || CONFIG_IDF_TARGET_ESP32S2 || CONFIG_IDF_TARGET_ESP32S3))) && ENABLE_DRIVER_MDNS
+ 
+ #include "lwip/apps/mdns_opts.h"
+ 
+diff --git a/src/obk_config.h b/src/obk_config.h
+index 9b41b1f..3beaafe 100644
+--- a/src/obk_config.h
++++ b/src/obk_config.h
+@@ -607,6 +607,10 @@
+ #undef NO_CHIP_TEMPERATURE
+ #endif
+ 
++#if PLATFORM_RTL8720D
++#define ENABLE_DRIVER_MDNS 1
++#endif
++
+ #if PLATFORM_RTL8720D || PLATFORM_RTL8721DA
+ #define ENABLE_BT_PROXY							1
+ #define ENABLE_DRIVER_ESPHOME_API				1
+diff --git a/src/user_main.c b/src/user_main.c
+index f72abb6..6b4c71c 100644
+--- a/src/user_main.c
++++ b/src/user_main.c
+@@ -110,7 +110,11 @@ uint8_t g_StartupDelayOver = 0;
+ uint32_t idleCount = 0;
+ 
+ int DRV_SSDP_Active = 0;
++#if PLATFORM_RTL8720D && ENABLE_DRIVER_MDNS
++int DRV_MDNS_Active = 1;
++#else
+ int DRV_MDNS_Active = 0;
++#endif
+ 
+ #define LOG_FEATURE LOG_FEATURE_MAIN
+ 

@@ -1,0 +1,31 @@
+diff --git a/component/common/network/mDNS/mDNSPlatform.c b/component/common/network/mDNS/mDNSPlatform.c
+index 9a095f4..4889a5c 100644
+--- a/component/common/network/mDNS/mDNSPlatform.c
++++ b/component/common/network/mDNS/mDNSPlatform.c
+@@ -1,6 +1,7 @@
+ #include <lwip/sockets.h>
+ #include <lwip/netif.h>
+ extern struct netif xnetif[];
++extern char *DRV_MDNS_RTL8720D_Hostname(void);
+ 
+ /*-----------------------------------------------------------------------
+  * Mandatory functions
+@@ -25,13 +26,17 @@ uint32_t mDNSPlatformInetAddr(char *cp)
+ 
+ uint8_t mDNSPlatformNetifIsUp(int idx)
+ {
+-	return netif_is_up(&xnetif[idx]);
++	return idx == 0 && netif_is_up(&xnetif[0]);
+ }
+ 
+ // Mandatory function to get hostname
+ // called when mDNS initialization
+ char *mDNSPlatformHostname(void)
+ {
++	char *hostname = DRV_MDNS_RTL8720D_Hostname();
++	if (*hostname) {
++		return hostname;
++	}
+ #if LWIP_NETIF_HOSTNAME
+ 	return (char *) xnetif[0].hostname;
+ #else

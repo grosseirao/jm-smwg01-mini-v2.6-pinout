@@ -1,2 +1,5 @@
 # OpenBeken scripts must reach the device with LF line endings
 *.bat text eol=lf
+
+# Patches are applied with git apply against LF sources
+*.patch text eol=lf

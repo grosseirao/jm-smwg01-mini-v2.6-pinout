@@ -71,7 +71,7 @@ A [versão OTA com mDNS](src/openbeken-mdns/README.md) anuncia `gateway-zigbee-b
 
 A versão `1.18.321-mdns3` também anuncia `_zigbee-coordinator._tcp.local.` na porta `8888` enquanto a ponte Zigbee estiver ativa. A publicação dos registros do coordenador foi confirmada por multicast na LAN. A descoberta no painel do Home Assistant depende do Zeroconf da instância.
 
-A versão `1.18.321-mdns4` acrescenta `_esphomelib._tcp.local.` na porta `6053` enquanto o proxy BLE (`ESPHomeAPI`) estiver ativo. É por esse tipo de serviço que a integração ESPHome do Home Assistant encontra o proxy Bluetooth. A API passa a informar o mesmo nome do mDNS. A versão foi instalada por OTA e os registros do novo serviço e o nome da API foram confirmados na LAN. A descoberta no painel do Home Assistant ainda precisa ser conferida.
+A versão `1.18.321-mdns4` acrescenta `_esphomelib._tcp.local.` na porta `6053` enquanto o proxy BLE (`ESPHomeAPI`) estiver ativo. É por esse tipo de serviço que a integração ESPHome do Home Assistant encontra o proxy Bluetooth. A API passa a informar o mesmo nome do mDNS. A versão foi instalada por OTA e os registros do novo serviço e o nome da API foram confirmados na LAN. No Home Assistant 2026.10.2, o hub apareceu como descoberto na integração ESPHome e foi adicionado como `gateway-zigbee-ble-dab113`, com o MAC `00:33:7A:DA:B1:13`. A chegada de anúncios BLE com o hub como origem ainda não foi conferida no monitor de anúncios.
 
 ## P1 na placa fotografada
 
