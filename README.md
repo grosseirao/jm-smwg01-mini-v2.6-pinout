@@ -65,6 +65,14 @@ Uma tomada Zigbee pareou pelo controlador local Bellows/zigpy e respondeu à lei
 
 A integração na instância final do Home Assistant ainda precisa ser testada. Para o ZHA, o endereço da ponte é `socket://IP_DO_HUB:8888` com rádio **Silicon Labs EZSP**. Para o proxy BLE, a integração é **ESPHome**, em `IP_DO_HUB:6053`.
 
+### Nome na rede local
+
+A [versão OTA com mDNS](src/openbeken-mdns/README.md) anuncia `gateway-zigbee-ble-<sufixo>.local` após conectar ao Wi-Fi. Cada unidade usa os últimos três bytes do próprio MAC do Wi-Fi. No hub com MAC `00:33:7A:DA:B1:13`, o nome `gateway-zigbee-ble-dab113.local` foi verificado na rede local após a atualização OTA.
+
+A versão `1.18.321-mdns3` também anuncia `_zigbee-coordinator._tcp.local.` na porta `8888` enquanto a ponte Zigbee estiver ativa. A publicação dos registros do coordenador foi confirmada por multicast na LAN. A descoberta no painel do Home Assistant depende do Zeroconf da instância.
+
+A versão `1.18.321-mdns4` acrescenta `_esphomelib._tcp.local.` na porta `6053` enquanto o proxy BLE (`ESPHomeAPI`) estiver ativo. É por esse tipo de serviço que a integração ESPHome do Home Assistant encontra o proxy Bluetooth. A API passa a informar o mesmo nome do mDNS. A versão foi instalada por OTA e os registros do novo serviço e o nome da API foram confirmados na LAN. A descoberta no painel do Home Assistant ainda precisa ser conferida.
+
 ## P1 na placa fotografada
 
 Olhe a **face dos componentes**, com o **USB-C para cima**, o ZS3L à esquerda e o WBRG1 à direita. P1 é a fileira de quatro furos logo abaixo do WBRG1, acima de P2, junto à inscrição **烧录** (gravação). Conte da esquerda para a direita.
