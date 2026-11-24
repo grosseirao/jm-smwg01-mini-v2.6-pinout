@@ -1,7 +1,18 @@
 # OpenRTL8720D com mDNS
 
-Esta versão parte do OpenBeken `1.18.321` (`168cba5`) e do SDK
-OpenRTL8720D `ad3d02c`. O driver usa o serviço mDNS do SDK Realtek.
+A partir da `1.18.321-mdns5`, esta versão parte do commit `323814d` do
+OpenBeken, de 24/11/2026, posterior à tag `1.18.321`, e do SDK
+OpenRTL8720D `ad3d02c`. Até a `mdns4`, a base era a tag `1.18.321`
+(`168cba5`). O commit `2efff41b` do OpenBeken, incluído nessa base, muda
+o proxy BLE no código compartilhado com o RTL8720D. A varredura só
+começa quando a pilha Bluetooth está pronta e é reiniciada após 60 s
+sem anúncios. Só a thread do servidor da API ESPHome envia pelo socket,
+e as outras threads enfileiram os quadros. As conexões GATT ativas do
+mesmo commit ficam desligadas no RTL8720D, porque o
+`ENABLE_BT_PROXY_GATT` só é definido na variante `btproxy` do
+RTL87X0C.
+
+O driver usa o serviço mDNS do SDK Realtek.
 Inicia quando a interface Wi-Fi já tem um IP e anuncia
 `gateway-zigbee-ble-<sufixo>.local`. O sufixo contém os últimos três
 bytes do MAC do Wi-Fi, escritos como seis dígitos hexadecimais em
@@ -33,7 +44,7 @@ o responder mDNS ativo, a API volta a usar o nome do OpenBeken.
 
 A imagem compilada fica em
 [outputs/OpenBeken-mdns](../../outputs/OpenBeken-mdns/). Para atualizar
-o WBRG1, use o arquivo `OpenRTL8720D_1.18.321-mdns4_ota.img` no painel
+o WBRG1, use o arquivo `OpenRTL8720D_1.18.321-mdns5_ota.img` no painel
 OTA do OpenBeken. A imagem atualiza o WBRG1. O firmware do rádio ZS3L
 fica na flash do próprio rádio.
 
@@ -49,16 +60,18 @@ Use Linux ou WSL com GNU Arm Embedded Toolchain `10.3-2021.10` no
 `PATH`. Em um checkout separado do código:
 
 ```bash
-git clone --branch 1.18.321 https://github.com/openshwprojects/OpenBK7231T_App.git
+git clone https://github.com/openshwprojects/OpenBK7231T_App.git
 cd OpenBK7231T_App
+git checkout 323814d3448070c03993272827fbd8eac3e3d5aa
 git submodule update --init sdk/OpenRTL8720D
 patch_dir=/caminho/absoluto/para/src/openbeken-mdns
 git apply "$patch_dir/openbeken.patch"
 git -C sdk/OpenRTL8720D apply "$patch_dir/realtek-sdk.patch"
-make -j4 APP_VERSION=1.18.321-mdns4 APP_NAME=OpenRTL8720D VARIANT=default OpenRTL8720D
+make -j4 APP_VERSION=1.18.321-mdns5 APP_NAME=OpenRTL8720D VARIANT=default OpenRTL8720D
 ```
 
-O arquivo OTA sai em `output/1.18.321-mdns4/`.
+O arquivo OTA sai em `output/1.18.321-mdns5/`. O patch da `mdns4` só
+se aplica à tag `1.18.321` e está no histórico do repositório.
 
 ## Verificação
 
@@ -104,6 +117,15 @@ anúncios BLE chegam tendo o hub como origem.
 O cartão `hci0` que aparece descoberto na integração Bluetooth é outro
 adaptador. Ele pertence ao host do Home Assistant, com endereço
 `02:FF:87:02:49:B4`, lido no `debugfs` do host.
+
+A `1.18.321-mdns5` foi compilada sem avisos nos arquivos alterados e
+instalada por OTA no hub. Os registros mDNS dos dois serviços ficaram
+iguais aos da `mdns4`. O servidor da API ESPHome dessa base atende um
+cliente por vez, e cada conexão nova substitui a anterior. Com o Home
+Assistant conectado, ele reconecta em seguida e derruba a conexão do
+`verificar_servicos.py`. Por isso a versão e o nome informados pela API
+não foram lidos pelo script nessa versão. Falta conferir no Home
+Assistant a versão do dispositivo ESPHome e a ponte Zigbee.
 
 ### Endereço Bluetooth do hub
 

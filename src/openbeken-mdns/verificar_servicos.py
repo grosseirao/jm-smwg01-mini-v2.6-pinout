@@ -266,7 +266,15 @@ def main():
         print("  nenhuma resposta dos servicos procurados")
     if len(sys.argv) > 1:
         print(f"API ESPHome em {sys.argv[1]}:6053:")
-        query_api(sys.argv[1])
+        try:
+            query_api(sys.argv[1])
+        except (RuntimeError, OSError) as exc:
+            # Desde o OpenBeken 323814d o servidor atende um cliente por vez e
+            # cada conexao nova substitui a anterior. Com o Home Assistant
+            # conectado, ele derruba este teste ao reconectar.
+            print(f"  falhou: {exc}")
+            print("  Se o Home Assistant estiver conectado ao hub, ele retoma a conexao "
+                  "e derruba este teste. Confira a versao pela pagina do dispositivo no HA.")
 
 
 if __name__ == "__main__":

@@ -1,9 +1,9 @@
 diff --git a/src/driver/drv_esphome_api.c b/src/driver/drv_esphome_api.c
-index 390731a..a757df9 100644
+index 2c8aa86..8d936ed 100644
 --- a/src/driver/drv_esphome_api.c
 +++ b/src/driver/drv_esphome_api.c
-@@ -89,6 +89,24 @@ static void PB_SendFrame(int client_sock, uint32_t msg_type, uint8_t* payload, u
- 	}
+@@ -78,6 +78,24 @@ static void PB_SendFrame(int client_sock, uint32_t msg_type, uint8_t* payload, u
+ 	else ESPHome_API_SendFrame(msg_type, payload, payload_len, false);
  }
  
 +#if PLATFORM_RTL8720D && ENABLE_DRIVER_MDNS
@@ -27,7 +27,7 @@ index 390731a..a757df9 100644
  void ESPHome_API_Send_HelloResponse(int client_sock)
  {
  	uint8_t payload[256];
-@@ -96,7 +114,7 @@ void ESPHome_API_Send_HelloResponse(int client_sock)
+@@ -85,7 +103,7 @@ void ESPHome_API_Send_HelloResponse(int client_sock)
  	pb_encode_varint_field(&ptr, 1, 1); // API Version Major
  	pb_encode_varint_field(&ptr, 2, 9); // API Version Minor
  	pb_encode_string_field(&ptr, 3, "OpenBeken"); // Server Info
@@ -36,7 +36,7 @@ index 390731a..a757df9 100644
  
  	PB_SendFrame(client_sock, ESPHOME_MSG_HelloResponse, payload, ptr - payload);
  }
-@@ -124,7 +142,7 @@ void ESPHome_API_Send_DeviceInfoResponse(int client_sock)
+@@ -113,7 +131,7 @@ void ESPHome_API_Send_DeviceInfoResponse(int client_sock)
  	// Retrieve device MAC address dynamically
  	HAL_GetMACStr(mac_str);
  
@@ -226,10 +226,10 @@ index b29d900..c53a3e7 100644
  #include "lwip/apps/mdns_opts.h"
  
 diff --git a/src/obk_config.h b/src/obk_config.h
-index 9b41b1f..3beaafe 100644
+index 0481067..dcbb72d 100644
 --- a/src/obk_config.h
 +++ b/src/obk_config.h
-@@ -607,6 +607,10 @@
+@@ -617,6 +617,10 @@
  #undef NO_CHIP_TEMPERATURE
  #endif
  
@@ -241,7 +241,7 @@ index 9b41b1f..3beaafe 100644
  #define ENABLE_BT_PROXY							1
  #define ENABLE_DRIVER_ESPHOME_API				1
 diff --git a/src/user_main.c b/src/user_main.c
-index f72abb6..6b4c71c 100644
+index f43c16b..44f63af 100644
 --- a/src/user_main.c
 +++ b/src/user_main.c
 @@ -110,7 +110,11 @@ uint8_t g_StartupDelayOver = 0;
