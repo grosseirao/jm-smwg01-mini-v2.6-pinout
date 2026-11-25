@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="470" viewBox="0 0 680 470" role="img">
+<title>WBRG1 na JM-SMWG01-MINI V2.6</title>
+<desc>WBRG1 com antena à direita e USB-C para cima. Borda de cima W1 a W9: GND, EN, PB4, PB7, PB6, PB5, PA28, RX0, RTS0. Borda esquerda W10 a W16: PRI, REQ, GNT, TX0, CTS0, RX1, TX1. Borda de baixo W17 a W25: 3V3, PA25, PB22, AOUT, MIC GND, MIC1, Log TX, Log RX, PB23.</desc>
+<style>
+.ts{font:12px sans-serif;fill:#444441}
+.th{font:500 13px sans-serif;fill:#2C2C2A}
+.box{fill:#F1EFE8;stroke:#888780;stroke-width:.5}
+.ok{fill:#E1F5EE;stroke:#0F6E56;stroke-width:.8}
+.ds{fill:#FAECE7;stroke:#993C1D;stroke-width:.8}
+.no{fill:#FFFFFF;stroke:#888780;stroke-width:.6}
+.leader{stroke:#888780;stroke-width:.5;stroke-dasharray:3 3}
+</style>
+<rect x="0" y="0" width="680" height="470" fill="#FFFFFF"/>
+<text class="th" x="20" y="24">WBRG1 (RTL8721CSM) na JM-SMWG01-MINI V2.6, componentes para cima, USB-C em cima</text>
+<rect class="box" x="170" y="130" width="360" height="220" rx="6"/>
+<rect x="450" y="140" width="70" height="200" rx="4" fill="none" stroke="#888780" stroke-width=".5" stroke-dasharray="4 4"/>
+<text class="ts" x="485" y="244" text-anchor="middle">antena</text>
+<text class="th" x="320" y="236" text-anchor="middle">WBRG1</text>
+<g>
+<rect class="ok" x="179" y="120" width="22" height="20" rx="3"/><rect class="no" x="209" y="120" width="22" height="20" rx="3"/>
+<rect class="ok" x="239" y="120" width="22" height="20" rx="3"/><rect class="no" x="269" y="120" width="22" height="20" rx="3"/>
+<rect class="no" x="299" y="120" width="22" height="20" rx="3"/><rect class="no" x="329" y="120" width="22" height="20" rx="3"/>
+<rect class="ok" x="359" y="120" width="22" height="20" rx="3"/><rect class="ok" x="389" y="120" width="22" height="20" rx="3"/>
+<rect class="ds" x="419" y="120" width="22" height="20" rx="3"/>
+</g>
+<rect class="ok" x="209" y="120" width="22" height="20" rx="3"/>
+<g class="ts" text-anchor="middle">
+<text x="190" y="106">W1</text><text x="220" y="106">W2</text><text x="250" y="106">W3</text><text x="280" y="106">W4</text><text x="310" y="106">W5</text>
+<text x="340" y="106">W6</text><text x="370" y="106">W7</text><text x="400" y="106">W8</text><text x="430" y="106">W9</text>
+<text x="190" y="86">GND</text><text x="220" y="86">EN</text><text x="250" y="86">PB4</text><text x="280" y="86">PB7</text><text x="310" y="86">PB6</text>
+<text x="340" y="86">PB5</text><text x="370" y="86">PA28</text><text x="400" y="86">RX0</text><text x="430" y="66">RTS0</text>
+</g>
+<line class="leader" x1="430" y1="72" x2="430" y2="94"/>
+<g>
+<rect class="no" x="160" y="149" width="20" height="22" rx="3"/><rect class="no" x="160" y="179" width="20" height="22" rx="3"/>
+<rect class="no" x="160" y="209" width="20" height="22" rx="3"/><rect class="ok" x="160" y="239" width="20" height="22" rx="3"/>
+<rect class="ds" x="160" y="269" width="20" height="22" rx="3"/><rect class="no" x="160" y="299" width="20" height="22" rx="3"/>
+<rect class="no" x="160" y="329" width="20" height="22" rx="3"/>
+</g>
+<g class="ts" text-anchor="end">
+<text x="150" y="164">W10  PRI (PB1)</text><text x="150" y="194">W11  REQ (PA26)</text><text x="150" y="224">W12  GNT (PA27)</text>
+<text x="150" y="254">W13  TX0 (PA18)</text><text x="150" y="284">W14  CTS0 (PA17)</text><text x="150" y="314">W15  RX1 (PA13)</text>
+<text x="150" y="344">W16  TX1 (PA12)</text>
+</g>
+<g>
+<rect class="no" x="179" y="340" width="22" height="20" rx="3"/><rect class="no" x="209" y="340" width="22" height="20" rx="3"/>
+<rect class="no" x="239" y="340" width="22" height="20" rx="3"/><rect class="no" x="269" y="340" width="22" height="20" rx="3"/>
+<rect class="no" x="299" y="340" width="22" height="20" rx="3"/><rect class="no" x="329" y="340" width="22" height="20" rx="3"/>
+<rect class="ok" x="359" y="340" width="22" height="20" rx="3"/><rect class="ok" x="389" y="340" width="22" height="20" rx="3"/>
+<rect class="no" x="419" y="340" width="22" height="20" rx="3"/>
+</g>
+<g class="ts" text-anchor="middle">
+<text x="190" y="380">W17</text><text x="220" y="380">W18</text><text x="250" y="380">W19</text><text x="280" y="380">W20</text><text x="310" y="380">W21</text>
+<text x="340" y="380">W22</text><text x="370" y="380">W23</text><text x="400" y="380">W24</text><text x="430" y="380">W25</text>
+<text x="190" y="400">3V3</text><text x="220" y="400">PA25</text><text x="250" y="400">PB22</text><text x="280" y="400">AOUT</text><text x="310" y="400">MIC</text>
+<text x="340" y="400">MIC1</text><text x="370" y="400">LogTX</text><text x="400" y="420">LogRX</text><text x="430" y="400">PB23</text>
+</g>
+<line class="leader" x1="400" y1="386" x2="400" y2="408"/>
+<rect class="ok" x="20" y="440" width="14" height="14" rx="3"/><text class="ts" x="40" y="451">medido com o multímetro</text>
+<rect class="ds" x="210" y="440" width="14" height="14" rx="3"/><text class="ts" x="230" y="451">segue o datasheet, não medido</text>
+<text class="ts" x="440" y="451">W = referência das medições</text>
+</svg>

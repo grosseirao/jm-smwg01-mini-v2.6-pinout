@@ -1,8 +1,54 @@
+diff --git a/platforms/obk_main.cmake b/platforms/obk_main.cmake
+index 31f9893..4764e55 100644
+--- a/platforms/obk_main.cmake
++++ b/platforms/obk_main.cmake
+@@ -89,6 +89,7 @@ set(OBKM_SRC
+ 	${OBK_SRCS}driver/drv_ds1820_full.c
+ 	${OBK_SRCS}driver/drv_esphome_api.c
+ 	${OBK_SRCS}driver/drv_esphome_api_server.c
++	${OBK_SRCS}driver/drv_esphome_serial_proxy.c
+ 	${OBK_SRCS}driver/drv_freeze.c
+ 	${OBK_SRCS}driver/drv_gn6932.c
+ 	${OBK_SRCS}driver/drv_hd2015.c
+diff --git a/platforms/obk_main.mk b/platforms/obk_main.mk
+index 160d7ca..8f62388 100644
+--- a/platforms/obk_main.mk
++++ b/platforms/obk_main.mk
+@@ -110,6 +110,7 @@ OBKM_SRC  += $(OBK_SRCS)driver/drv_ds1820_simple.c
+ OBKM_SRC  += $(OBK_SRCS)driver/drv_ds1820_full.c
+ OBKM_SRC  += $(OBK_SRCS)driver/drv_esphome_api.c
+ OBKM_SRC  += $(OBK_SRCS)driver/drv_esphome_api_server.c
++OBKM_SRC  += $(OBK_SRCS)driver/drv_esphome_serial_proxy.c
+ OBKM_SRC  += $(OBK_SRCS)driver/drv_freeze.c
+ OBKM_SRC  += $(OBK_SRCS)driver/drv_gn6932.c
+ OBKM_SRC  += $(OBK_SRCS)driver/drv_hd2015.c
 diff --git a/src/driver/drv_esphome_api.c b/src/driver/drv_esphome_api.c
-index 2c8aa86..8d936ed 100644
+index 2c8aa86..86601dc 100644
 --- a/src/driver/drv_esphome_api.c
 +++ b/src/driver/drv_esphome_api.c
-@@ -78,6 +78,24 @@ static void PB_SendFrame(int client_sock, uint32_t msg_type, uint8_t* payload, u
+@@ -5,9 +5,21 @@
+ #include <lwip/sockets.h>
+ #include "../new_cfg.h"
+ #include "../hal/hal_bt_proxy.h"
++#include "drv_esphome_serial_proxy.h"
+ 
+ #if ENABLE_DRIVER_ESPHOME_API
+ 
++#define ESPHOME_MSG_DeviceCapabilitiesRequest 149
++#define ESPHOME_MSG_DeviceCapabilitiesResponse 150
++
++#if ENABLE_DRIVER_ESPHOME_SERIAL_PROXY
++// Serial proxy modes (SetMode) need API 1.17. From 1.15 on, clients read the
++// proxy features from DeviceCapabilitiesResponse instead of DeviceInfoResponse.
++#define ESPHOME_API_VERSION_MINOR 17
++#else
++#define ESPHOME_API_VERSION_MINOR 9
++#endif
++
+ #define INVALID_SOCK -1
+ 
+ extern bool g_bt_proxy_forwarding_active;
+@@ -78,14 +90,32 @@ static void PB_SendFrame(int client_sock, uint32_t msg_type, uint8_t* payload, u
  	else ESPHome_API_SendFrame(msg_type, payload, payload_len, false);
  }
  
@@ -27,16 +73,17 @@ index 2c8aa86..8d936ed 100644
  void ESPHome_API_Send_HelloResponse(int client_sock)
  {
  	uint8_t payload[256];
-@@ -85,7 +103,7 @@ void ESPHome_API_Send_HelloResponse(int client_sock)
+ 	uint8_t* ptr = payload;
  	pb_encode_varint_field(&ptr, 1, 1); // API Version Major
- 	pb_encode_varint_field(&ptr, 2, 9); // API Version Minor
+-	pb_encode_varint_field(&ptr, 2, 9); // API Version Minor
++	pb_encode_varint_field(&ptr, 2, ESPHOME_API_VERSION_MINOR); // API Version Minor
  	pb_encode_string_field(&ptr, 3, "OpenBeken"); // Server Info
 -	pb_encode_string_field(&ptr, 4, CFG_GetDeviceName());   // Name
 +	pb_encode_string_field(&ptr, 4, ESPHome_API_GetNodeName());   // Name
  
  	PB_SendFrame(client_sock, ESPHOME_MSG_HelloResponse, payload, ptr - payload);
  }
-@@ -113,7 +131,7 @@ void ESPHome_API_Send_DeviceInfoResponse(int client_sock)
+@@ -113,7 +143,7 @@ void ESPHome_API_Send_DeviceInfoResponse(int client_sock)
  	// Retrieve device MAC address dynamically
  	HAL_GetMACStr(mac_str);
  
@@ -45,6 +92,844 @@ index 2c8aa86..8d936ed 100644
  	pb_encode_string_field(&ptr, 3, mac_str); // Mac address
  	pb_encode_string_field(&ptr, 4, USER_SW_VER); // Firmware Version
  	pb_encode_string_field(&ptr, 6, PLATFORM_MCU_NAME); // Model
+@@ -141,9 +171,55 @@ void ESPHome_API_Send_DeviceInfoResponse(int client_sock)
+ 	}
+ #endif
+ 
++#if ENABLE_DRIVER_ESPHOME_SERIAL_PROXY
++	{
++		uint8_t info[32];
++		int info_len = ESPHome_SerialProxy_EncodeInfo(info);
++		if(info_len > 0) pb_encode_bytes_field(&ptr, 25, info, info_len); // serial_proxies
++	}
++#endif
++
+ 	PB_SendFrame(client_sock, ESPHOME_MSG_DeviceInfoResponse, payload, ptr - payload);
+ }
+ 
++// API 1.15+: the proxy features, which DeviceInfoResponse carried before.
++void ESPHome_API_Send_DeviceCapabilitiesResponse(int client_sock)
++{
++	uint8_t payload[128];
++	uint8_t* ptr = payload;
++
++#if ENABLE_BT_PROXY
++	if(HAL_BTProxy_IsInit())
++	{
++		uint8_t sub[48];
++		uint8_t* sp = sub;
++		char mac_str[32];
++#if PLATFORM_ESPIDF || ENABLE_BT_PROXY_GATT
++		uint64_t flags = 2 | 4 | 32 | 64;
++#else
++		uint64_t flags = 32 | 64;
++#endif
++		flags |= HAL_BTProxy_GetScanMode();
++		uint8_t btmac[6];
++		HAL_BTProxy_GetMAC(btmac);
++		sprintf(mac_str, MACSTR, MAC2STR(btmac));
++		pb_encode_varint_field(&sp, 1, flags);   // feature_flags
++		pb_encode_string_field(&sp, 2, mac_str); // mac_address
++		pb_encode_bytes_field(&ptr, 1, sub, sp - sub); // bluetooth_proxy
++	}
++#endif
++
++#if ENABLE_DRIVER_ESPHOME_SERIAL_PROXY
++	{
++		uint8_t info[32];
++		int info_len = ESPHome_SerialProxy_EncodeInfo(info);
++		if(info_len > 0) pb_encode_bytes_field(&ptr, 4, info, info_len); // serial_proxies
++	}
++#endif
++
++	PB_SendFrame(client_sock, ESPHOME_MSG_DeviceCapabilitiesResponse, payload, ptr - payload);
++}
++
+ void ESPHome_API_Send_ListEntitiesDoneResponse(int client_sock)
+ {
+ 	// Empty payload for ListEntitiesDoneResponse
+@@ -514,6 +590,9 @@ void ESPHome_API_Process_Packet(int client_sock, uint32_t type, uint8_t* payload
+ 			ADDLOG_EXTRADEBUG(LOG_FEATURE_DRV, "ESPHomeAPI: Handshake -> DeviceInfoRequest");
+ 			ESPHome_API_Send_DeviceInfoResponse(client_sock);
+ 			break;
++		case ESPHOME_MSG_DeviceCapabilitiesRequest:
++			ESPHome_API_Send_DeviceCapabilitiesResponse(client_sock);
++			break;
+ 		case ESPHOME_MSG_ListEntitiesRequest:
+ 			ADDLOG_EXTRADEBUG(LOG_FEATURE_DRV, "ESPHomeAPI: Handshake -> ListEntitiesRequest (Sending Done)");
+ 			// We only expose BT Proxy, no manual entities right now. Just send Done.
+@@ -556,6 +635,9 @@ void ESPHome_API_Process_Packet(int client_sock, uint32_t type, uint8_t* payload
+ 			ESPHome_API_Process_BT_Request(client_sock, type, payload, size);
+ 			break;
+ 		default:
++#if ENABLE_DRIVER_ESPHOME_SERIAL_PROXY
++			if(ESPHome_SerialProxy_Process(client_sock, type, payload, size)) break;
++#endif
+ 			ADDLOG_EXTRADEBUG(LOG_FEATURE_DRV, "ESPHomeAPI: Unhandled message type %d", type);
+ 			break;
+ 	}
+diff --git a/src/driver/drv_esphome_api.h b/src/driver/drv_esphome_api.h
+index 2501fcc..ffd2a34 100644
+--- a/src/driver/drv_esphome_api.h
++++ b/src/driver/drv_esphome_api.h
+@@ -61,6 +61,8 @@
+ // Thread-safe frame send to the connected client (serialised by a mutex).
+ // droppable: if the socket is congested before anything was written, drop instead of waiting.
+ bool ESPHome_API_SendFrame(uint32_t msg_type, const uint8_t* payload, uint32_t payload_len, bool droppable);
++// Any thread: queue a frame that must not be dropped, waiting up to wait_ms for queue room.
++bool ESPHome_API_SendFrameWait(uint32_t msg_type, const uint8_t* payload, uint32_t payload_len, uint32_t wait_ms);
+ // Server thread only (replying to a request on that thread's socket).
+ bool ESPHome_API_SendFrameNow(int sock, uint32_t msg_type, const uint8_t* payload, uint32_t payload_len);
+ bool ESPHome_API_IsClientConnected(void);
+diff --git a/src/driver/drv_esphome_api_server.c b/src/driver/drv_esphome_api_server.c
+index 5ad73d0..076f9fd 100644
+--- a/src/driver/drv_esphome_api_server.c
++++ b/src/driver/drv_esphome_api_server.c
+@@ -4,6 +4,7 @@
+ #include "drv_esphome_api.h"
+ #include "../hal/hal_bt_proxy.h"
+ #include "../new_pins.h"
++#include "drv_esphome_serial_proxy.h"
+ #include <lwip/sockets.h>
+ 
+ #if ENABLE_DRIVER_ESPHOME_API
+@@ -201,6 +202,28 @@ bool ESPHome_API_SendFrame(uint32_t msg_type, const uint8_t* payload, uint32_t p
+ 	return true;
+ }
+ 
++// Any thread: queue a frame that must not be lost, waiting up to wait_ms for
++// room. Used for serial proxy data, which the ASH tap may already have
++// acknowledged to the NCP.
++bool ESPHome_API_SendFrameWait(uint32_t msg_type, const uint8_t* payload, uint32_t payload_len, uint32_t wait_ms)
++{
++	if(client_sock == INVALID_SOCK || s_tx_queue == NULL) return false;
++	tx_frame_t* f = ESPHome_API_BuildFrame(msg_type, payload, payload_len, false);
++	if(!f)
++	{
++		s_tx_dropped++;
++		return false;
++	}
++	if(xQueueSend(s_tx_queue, &f, pdMS_TO_TICKS(wait_ms)) != pdTRUE)
++	{
++		os_free(f);
++		ADDLOG_ERROR(LOG_FEATURE_DRV, "ESPHomeAPI: TX queue full, dropped frame type %d", msg_type);
++		s_tx_dropped++;
++		return false;
++	}
++	return true;
++}
++
+ static void ESPHome_API_TCP_Server_Thread(void* param)
+ {
+ 	int reuse = 1;
+@@ -401,6 +424,10 @@ static void ESPHome_API_TCP_Server_Thread(void* param)
+ 		disconnect:
+ 			ADDLOG_INFO(LOG_FEATURE_DRV, "ESPHomeAPI: Client disconnected or error");
+ 			g_bt_proxy_forwarding_active = false;
++#if ENABLE_DRIVER_ESPHOME_SERIAL_PROXY
++			// The subscription and PROTOCOL mode end with the connection.
++			ESPHome_SerialProxy_OnClientGone();
++#endif
+ 			{
+ 				int sock = client_sock;
+ 				client_sock = INVALID_SOCK; // stop other tasks from queueing more
+diff --git a/src/driver/drv_esphome_serial_proxy.c b/src/driver/drv_esphome_serial_proxy.c
+new file mode 100644
+index 0000000..1fdeef4
+--- /dev/null
++++ b/src/driver/drv_esphome_serial_proxy.c
+@@ -0,0 +1,610 @@
++// ESPHome native API serial proxy for the EZSP radio behind UART0.
++//
++// Exposes one UART as an ESPHome "serial proxy" port, so Home Assistant's ZHA
++// can reach the Zigbee NCP through the ESPHome integration's connection
++// (esphome-hass://...). bellows opens such a port in PROTOCOL mode and stops
++// sending ASH acknowledgements itself; this driver then acknowledges the
++// NCP's DATA frames locally, so the NCP's ack timeout does not depend on the
++// Wi-Fi round trip to Home Assistant.
++//
++// Threads: requests arrive on the ESPHome API server thread. A reader thread
++// moves bytes from the UART ring buffer to the client and sends the ASH
++// acknowledgements. UART writes from both threads go through one mutex, so an
++// acknowledgement never lands inside a frame the client is writing.
++
++#include "../new_common.h"
++#include "../logging/logging.h"
++#include "../cmnds/cmd_public.h"
++#include "drv_esphome_api.h"
++#include "drv_esphome_serial_proxy.h"
++#include "drv_uart.h"
++
++#if ENABLE_DRIVER_ESPHOME_SERIAL_PROXY
++
++#define SP_PORT_NAME "zigbee"
++#define SP_READ_MAX 240
++#define SP_IDLE_POLL_MS 2
++#define SP_QUEUE_WAIT_MS 200
++#define SP_RING_SIZE 2048
++
++// SerialProxyRequestType
++#define SP_REQ_SUBSCRIBE 0
++#define SP_REQ_UNSUBSCRIBE 1
++#define SP_REQ_FLUSH 2
++#define SP_REQ_CONFIGURE 3
++#define SP_REQ_SET_MODEM_PINS 4
++#define SP_REQ_SET_MODE 5
++
++// SerialProxyStatus
++#define SP_STATUS_OK 0
++#define SP_STATUS_NOT_SUPPORTED 4
++#define SP_STATUS_PORT_IN_USE 5
++#define SP_STATUS_INVALID_ARGUMENT 6
++
++// SerialProxyMode
++#define SP_MODE_RAW 0
++#define SP_MODE_PROTOCOL 1
++
++// ASH framing (UG101)
++#define ASH_FLAG 0x7E
++#define ASH_ESCAPE 0x7D
++#define ASH_XOR 0x20
++#define ASH_SUBSTITUTE 0x18
++#define ASH_XON 0x11
++#define ASH_XOFF 0x13
++#define ASH_CANCEL 0x1A
++#define ASH_WAKE 0xFF
++#define ASH_RSTACK 0xC1
++#define ASH_VERSION 0x02
++#define ASH_MAX_BODY (1 + 220 + 2)
++
++static volatile bool s_running = false;
++static volatile bool s_subscribed = false;
++static volatile bool s_protocol = false;
++static bool s_force_flow = true;
++static int s_baud = 115200;
++static int s_parity = 0;
++static xTaskHandle s_reader_thread = NULL;
++static SemaphoreHandle_t s_write_mutex = NULL;
++
++static volatile uint32_t s_rx_bytes = 0;
++static volatile uint32_t s_tx_bytes = 0;
++static volatile uint32_t s_acks = 0;
++static volatile uint32_t s_rx_dropped = 0;
++
++// ---- ASH acknowledger -------------------------------------------------------
++
++typedef struct
++{
++	uint8_t header[2];
++	uint16_t index;
++	uint16_t length;
++	uint16_t crc;
++	bool escaped;
++	bool discarding;
++	bool overflow;
++	uint8_t next_frame;
++	bool synced;
++} ash_state_t;
++
++static ash_state_t s_ash;
++
++static uint16_t ASH_CrcUpdate(uint16_t crc, uint8_t value)
++{
++	crc ^= (uint16_t)value << 8;
++	for(int i = 0; i < 8; i++)
++	{
++		crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
++	}
++	return crc;
++}
++
++static void ASH_ResetFrame(void)
++{
++	s_ash.index = 0;
++	s_ash.crc = 0xFFFF;
++	s_ash.escaped = false;
++	s_ash.discarding = false;
++	s_ash.overflow = false;
++}
++
++static void ASH_Reset(void)
++{
++	ASH_ResetFrame();
++	s_ash.next_frame = 0;
++	s_ash.synced = false;
++}
++
++// Returns true when a complete frame with a valid CRC ends at this byte.
++static bool ASH_ScanByte(uint8_t b)
++{
++	if(b == ASH_FLAG)
++	{
++		// Running the CRC over the body and its CRC leaves zero when intact.
++		bool valid = !s_ash.discarding && !s_ash.overflow && !s_ash.escaped &&
++			s_ash.index >= 3 && s_ash.crc == 0;
++		if(valid) s_ash.length = s_ash.index - 2;
++		ASH_ResetFrame();
++		return valid;
++	}
++	if(b == ASH_CANCEL)
++	{
++		ASH_ResetFrame();
++		return false;
++	}
++	if(s_ash.discarding || (b == ASH_WAKE && s_ash.index == 0)) return false;
++	if(b == ASH_SUBSTITUTE)
++	{
++		s_ash.discarding = true;
++		return false;
++	}
++	if(b == ASH_XON || b == ASH_XOFF) return false;
++	if(b == ASH_ESCAPE)
++	{
++		s_ash.escaped = true;
++		return false;
++	}
++	if(s_ash.escaped)
++	{
++		s_ash.escaped = false;
++		b ^= ASH_XOR;
++	}
++	if(s_ash.index >= ASH_MAX_BODY)
++	{
++		s_ash.overflow = true;
++		return false;
++	}
++	if(s_ash.index < 2) s_ash.header[s_ash.index] = b;
++	s_ash.index++;
++	s_ash.crc = ASH_CrcUpdate(s_ash.crc, b);
++	return false;
++}
++
++// Returns true when the frame that just ended is owed an ACK; *ack_num is the
++// next frame number expected from the NCP.
++static bool ASH_FrameOwesAck(uint8_t* ack_num)
++{
++	uint8_t control = s_ash.header[0];
++
++	if(control == ASH_RSTACK)
++	{
++		// RSTACK: control, version, reset code. It restarts the numbering.
++		if(s_ash.length == 3 && s_ash.header[1] == ASH_VERSION)
++		{
++			s_ash.next_frame = 0;
++			s_ash.synced = true;
++		}
++		return false;
++	}
++	// ACK, NAK, RST and ERROR frames are not acknowledged.
++	if(control & 0x80) return false;
++	// A DATA frame carries at least a 3-byte EZSP frame after its control byte.
++	if(s_ash.length < 4) return false;
++
++	uint8_t frame_num = (control >> 4) & 0x07;
++	bool retransmit = (control & 0x08) != 0;
++	if(!s_ash.synced)
++	{
++		// The session started before we were watching: follow the NCP.
++		s_ash.next_frame = frame_num;
++		s_ash.synced = true;
++	}
++	if(frame_num == s_ash.next_frame)
++	{
++		s_ash.next_frame = (s_ash.next_frame + 1) & 0x07;
++		*ack_num = s_ash.next_frame;
++		return true;
++	}
++	// A retransmission of a frame already received: acknowledge it again.
++	*ack_num = s_ash.next_frame;
++	return retransmit;
++}
++
++// ---- UART helpers -----------------------------------------------------------
++
++static void SP_WriteLocked(const uint8_t* data, int len)
++{
++	if(s_write_mutex) xSemaphoreTake(s_write_mutex, portMAX_DELAY);
++	for(int i = 0; i < len; i++)
++	{
++		UART_SendByte(data[i]);
++	}
++	if(s_write_mutex) xSemaphoreGive(s_write_mutex);
++}
++
++static void SP_SendAck(uint8_t ack_num)
++{
++	uint8_t control = 0x80 | (ack_num & 0x07);
++	uint16_t crc = ASH_CrcUpdate(0xFFFF, control);
++	// None of the eight ACK frames contains a byte that needs escaping.
++	uint8_t frame[5] = { ASH_FLAG, control, (uint8_t)(crc >> 8), (uint8_t)crc, ASH_FLAG };
++	SP_WriteLocked(frame, sizeof(frame));
++	s_acks++;
++}
++
++// ---- Protobuf helpers -------------------------------------------------------
++
++static void SP_PutVarint(uint8_t** p, uint32_t v)
++{
++	while(v >= 0x80)
++	{
++		*(*p)++ = (uint8_t)(v | 0x80);
++		v >>= 7;
++	}
++	*(*p)++ = (uint8_t)v;
++}
++
++static void SP_PutVarintField(uint8_t** p, int field, uint32_t v)
++{
++	SP_PutVarint(p, (uint32_t)(field << 3));
++	SP_PutVarint(p, v);
++}
++
++static void SP_PutBytesField(uint8_t** p, int field, const uint8_t* data, int len)
++{
++	SP_PutVarint(p, (uint32_t)((field << 3) | 2));
++	SP_PutVarint(p, (uint32_t)len);
++	if(len) memcpy(*p, data, len);
++	*p += len;
++}
++
++static bool SP_GetVarint(const uint8_t** p, const uint8_t* end, uint32_t* v)
++{
++	uint32_t result = 0;
++	int shift = 0;
++	while(*p < end && shift < 35)
++	{
++		uint8_t b = *(*p)++;
++		result |= (uint32_t)(b & 0x7F) << shift;
++		if(!(b & 0x80))
++		{
++			*v = result;
++			return true;
++		}
++		shift += 7;
++	}
++	return false;
++}
++
++typedef struct
++{
++	uint32_t varints[8];		// fields 1..7 (index = field number)
++	const uint8_t* bytes;		// last length-delimited field 2
++	int bytes_len;
++} sp_fields_t;
++
++static bool SP_ParseFields(const uint8_t* payload, uint32_t size, sp_fields_t* out)
++{
++	const uint8_t* p = payload;
++	const uint8_t* end = payload + size;
++	memset(out, 0, sizeof(*out));
++	while(p < end)
++	{
++		uint32_t key, value;
++		if(!SP_GetVarint(&p, end, &key)) return false;
++		uint32_t field = key >> 3;
++		switch(key & 7)
++		{
++		case 0:
++			if(!SP_GetVarint(&p, end, &value)) return false;
++			if(field < 8) out->varints[field] = value;
++			break;
++		case 2:
++			if(!SP_GetVarint(&p, end, &value) || value > (uint32_t)(end - p)) return false;
++			if(field == 2)
++			{
++				out->bytes = p;
++				out->bytes_len = (int)value;
++			}
++			p += value;
++			break;
++		default:
++			return false;
++		}
++	}
++	return true;
++}
++
++static void SP_SendRequestResponse(int client_sock, uint32_t type, uint32_t status)
++{
++	uint8_t payload[16];
++	uint8_t* p = payload;
++	// instance 0 is the default and is omitted
++	SP_PutVarintField(&p, 2, type);
++	if(status) SP_PutVarintField(&p, 3, status);
++	ESPHome_API_SendFrameNow(client_sock, ESPHOME_MSG_SerialProxyRequestResponse, payload, p - payload);
++}
++
++// ---- Reader thread ----------------------------------------------------------
++
++static void SP_ReaderThread(void* param)
++{
++	uint8_t data[SP_READ_MAX];
++	uint8_t payload[SP_READ_MAX + 8];
++
++	while(s_running)
++	{
++		if(!s_subscribed)
++		{
++			rtos_delay_milliseconds(10);
++			continue;
++		}
++		int len = UART_GetDataSize();
++		if(len <= 0)
++		{
++			rtos_delay_milliseconds(SP_IDLE_POLL_MS);
++			continue;
++		}
++		if(len > SP_READ_MAX) len = SP_READ_MAX;
++		for(int i = 0; i < len; i++)
++		{
++			data[i] = UART_GetByte(i);
++		}
++		UART_ConsumeBytes(len);
++		s_rx_bytes += len;
++
++		if(s_protocol)
++		{
++			for(int i = 0; i < len; i++)
++			{
++				uint8_t ack_num;
++				if(ASH_ScanByte(data[i]) && ASH_FrameOwesAck(&ack_num))
++				{
++					SP_SendAck(ack_num);
++				}
++			}
++		}
++
++		uint8_t* p = payload;
++		SP_PutBytesField(&p, 2, data, len);
++		if(!ESPHome_API_SendFrameWait(ESPHOME_MSG_SerialProxyDataReceived, payload, p - payload, SP_QUEUE_WAIT_MS))
++		{
++			s_rx_dropped += len;
++		}
++	}
++	s_reader_thread = NULL;
++	rtos_suspend_thread(NULL);
++}
++
++// ---- API request handlers (ESPHome API server thread) -----------------------
++
++bool ESPHome_SerialProxy_IsSubscribed(void)
++{
++	return s_running && s_subscribed;
++}
++
++int ESPHome_SerialProxy_EncodeInfo(uint8_t* out)
++{
++	// SerialProxyInfo: name = 1; port_type = 2 (TTL = 0, the default);
++	// configured_line_states = 3 (none: RTS belongs to hardware flow control)
++	uint8_t* p = out;
++	if(!s_running) return 0;
++	SP_PutBytesField(&p, 1, (const uint8_t*)SP_PORT_NAME, strlen(SP_PORT_NAME));
++	return p - out;
++}
++
++void ESPHome_SerialProxy_OnClientGone(void)
++{
++	s_subscribed = false;
++	s_protocol = false;
++}
++
++bool ESPHome_SerialProxy_Process(int client_sock, uint32_t type, const uint8_t* payload, uint32_t size)
++{
++	sp_fields_t f;
++
++	switch(type)
++	{
++	case ESPHOME_MSG_SerialProxyConfigureRequest:
++	case ESPHOME_MSG_SerialProxyWriteRequest:
++	case ESPHOME_MSG_SerialProxySetModemPinsRequest:
++	case ESPHOME_MSG_SerialProxyGetModemPinsRequest:
++	case ESPHOME_MSG_SerialProxyRequest:
++	case ESPHOME_MSG_SerialProxySetModeRequest:
++		break;
++	default:
++		return false;
++	}
++
++	bool parsed = SP_ParseFields(payload, size, &f);
++	bool known_port = s_running && parsed && f.varints[1] == 0;
++
++	switch(type)
++	{
++	case ESPHOME_MSG_SerialProxyWriteRequest:
++		if(known_port && s_subscribed && f.bytes_len > 0)
++		{
++			SP_WriteLocked(f.bytes, f.bytes_len);
++			s_tx_bytes += f.bytes_len;
++		}
++		break;
++
++	case ESPHOME_MSG_SerialProxyRequest:
++	{
++		uint32_t req = f.varints[2];
++		uint32_t status = SP_STATUS_OK;
++		if(!known_port)
++		{
++			status = SP_STATUS_INVALID_ARGUMENT;
++		}
++		else if(req == SP_REQ_SUBSCRIBE)
++		{
++			if(UART_TCP_HasClient())
++			{
++				status = SP_STATUS_PORT_IN_USE;
++			}
++			else
++			{
++				s_protocol = false;
++				s_subscribed = true;
++				ADDLOG_INFO(LOG_FEATURE_DRV, "ESPHomeSerial: client subscribed");
++			}
++		}
++		else if(req == SP_REQ_UNSUBSCRIBE)
++		{
++			s_subscribed = false;
++			s_protocol = false;
++			ADDLOG_INFO(LOG_FEATURE_DRV, "ESPHomeSerial: client unsubscribed");
++		}
++		else if(req == SP_REQ_FLUSH)
++		{
++			// Writes are synchronous: every byte was handed to the UART already.
++		}
++		else
++		{
++			status = SP_STATUS_INVALID_ARGUMENT;
++		}
++		SP_SendRequestResponse(client_sock, req, status);
++		break;
++	}
++
++	case ESPHOME_MSG_SerialProxyConfigureRequest:
++	{
++		uint32_t status = SP_STATUS_OK;
++		uint32_t baud = f.varints[2];
++		uint32_t parity = f.varints[4];
++		uint32_t stop_bits = f.varints[5] ? f.varints[5] : 1;
++		uint32_t data_size = f.varints[6] ? f.varints[6] : 8;
++		if(!known_port)
++		{
++			status = SP_STATUS_INVALID_ARGUMENT;
++		}
++		else if(!s_subscribed)
++		{
++			status = SP_STATUS_PORT_IN_USE;
++		}
++		else if(baud < 1200 || baud > 2000000 || parity > 2)
++		{
++			status = SP_STATUS_INVALID_ARGUMENT;
++		}
++		else if(stop_bits != 1 || data_size != 8)
++		{
++			status = SP_STATUS_NOT_SUPPORTED;
++		}
++		else
++		{
++			// mbed SerialParity: None = 0, Odd = 1, Even = 2
++			int hal_parity = parity == 1 ? 2 : (parity == 2 ? 1 : 0);
++			// The radio's RTS/CTS lines are wired: keep hardware flow control on
++			// even if the client asks without it.
++			bool flow = s_force_flow ? true : (f.varints[3] != 0);
++			if((int)baud != s_baud || hal_parity != s_parity)
++			{
++				if(s_write_mutex) xSemaphoreTake(s_write_mutex, portMAX_DELAY);
++				UART_InitUART(baud, hal_parity, flow);
++				if(s_write_mutex) xSemaphoreGive(s_write_mutex);
++				s_baud = baud;
++				s_parity = hal_parity;
++			}
++			ADDLOG_INFO(LOG_FEATURE_DRV, "ESPHomeSerial: configured %u baud, flow %s", baud, flow ? "rts/cts" : "none");
++		}
++		SP_SendRequestResponse(client_sock, SP_REQ_CONFIGURE, status);
++		break;
++	}
++
++	case ESPHOME_MSG_SerialProxySetModemPinsRequest:
++		// No modem line can be driven by the client (configured_line_states = 0).
++		SP_SendRequestResponse(client_sock, SP_REQ_SET_MODEM_PINS,
++			known_port ? SP_STATUS_OK : SP_STATUS_INVALID_ARGUMENT);
++		break;
++
++	case ESPHOME_MSG_SerialProxyGetModemPinsRequest:
++	{
++		uint8_t out[8];
++		uint8_t* p = out;
++		if(!known_port) SP_PutVarintField(&p, 3, SP_STATUS_INVALID_ARGUMENT);
++		ESPHome_API_SendFrameNow(client_sock, ESPHOME_MSG_SerialProxyGetModemPinsResponse, out, p - out);
++		break;
++	}
++
++	case ESPHOME_MSG_SerialProxySetModeRequest:
++	{
++		uint32_t status = SP_STATUS_OK;
++		uint32_t mode = f.varints[2];
++		if(!known_port || mode > SP_MODE_PROTOCOL)
++		{
++			status = SP_STATUS_INVALID_ARGUMENT;
++		}
++		else if(!s_subscribed)
++		{
++			status = SP_STATUS_PORT_IN_USE;
++		}
++		else if(mode == SP_MODE_PROTOCOL)
++		{
++			// Numbering from an earlier session is stale.
++			ASH_Reset();
++			s_protocol = true;
++			ADDLOG_INFO(LOG_FEATURE_DRV, "ESPHomeSerial: PROTOCOL mode, acknowledging ASH frames");
++		}
++		else
++		{
++			s_protocol = false;
++			ADDLOG_INFO(LOG_FEATURE_DRV, "ESPHomeSerial: RAW mode");
++		}
++		SP_SendRequestResponse(client_sock, SP_REQ_SET_MODE, status);
++		break;
++	}
++	}
++	return true;
++}
++
++// ---- Driver -----------------------------------------------------------------
++
++static commandResult_t CMD_ESPHomeSerialStatus(const void* context, const char* cmd, const char* args, int cmdFlags)
++{
++	ADDLOG_INFO(LOG_FEATURE_DRV, "ESPHomeSerial: running %d, subscribed %d, protocol %d, %u baud, uart->client %u B, client->uart %u B, acks %u, dropped %u B",
++		s_running, s_subscribed, s_protocol, s_baud, s_rx_bytes, s_tx_bytes, s_acks, s_rx_dropped);
++	return CMD_RES_OK;
++}
++
++// startDriver ESPHomeSerial [baud] [forceFlowControl]
++// Shares UART0 with UartTCP: only one of them may hold the radio at a time.
++void DRV_ESPHome_SerialProxy_Init(void)
++{
++	s_baud = Tokenizer_GetArgIntegerDefault(1, 115200);
++	s_force_flow = Tokenizer_GetArgIntegerDefault(2, 1) != 0;
++	s_parity = 0;
++
++	if(s_write_mutex == NULL) s_write_mutex = xSemaphoreCreateMutex();
++	if(!UART_TCP_IsRunning())
++	{
++		UART_InitUART(s_baud, 0, s_force_flow);
++		UART_InitReceiveRingBuffer(SP_RING_SIZE);
++	}
++
++	s_subscribed = false;
++	s_protocol = false;
++	ASH_Reset();
++	s_running = true;
++	if(s_reader_thread == NULL)
++	{
++		OSStatus err = rtos_create_thread(&s_reader_thread, BEKEN_APPLICATION_PRIORITY,
++			"ESPHomeSerial",
++			(beken_thread_function_t)SP_ReaderThread,
++			2048,
++			(beken_thread_arg_t)0);
++		if(err != kNoErr)
++		{
++			s_reader_thread = NULL;
++			s_running = false;
++			ADDLOG_ERROR(LOG_FEATURE_DRV, "ESPHomeSerial: create reader thread failed with %d", err);
++			return;
++		}
++	}
++
++	//cmddetail:{"name":"ESPHomeSerialStatus","args":"",
++	//cmddetail:"descr":"Logs the state and byte counters of the ESPHome serial proxy.",
++	//cmddetail:"fn":"CMD_ESPHomeSerialStatus","file":"driver/drv_esphome_serial_proxy.c","requires":"",
++	//cmddetail:"examples":"ESPHomeSerialStatus"}
++	CMD_RegisterCommand("ESPHomeSerialStatus", CMD_ESPHomeSerialStatus, NULL);
++	ADDLOG_INFO(LOG_FEATURE_DRV, "ESPHomeSerial: port \"%s\" ready at %d baud", SP_PORT_NAME, s_baud);
++}
++
++void DRV_ESPHome_SerialProxy_Deinit(void)
++{
++	s_subscribed = false;
++	s_protocol = false;
++	s_running = false;
++}
++
++#endif // ENABLE_DRIVER_ESPHOME_SERIAL_PROXY
+diff --git a/src/driver/drv_esphome_serial_proxy.h b/src/driver/drv_esphome_serial_proxy.h
+new file mode 100644
+index 0000000..47b45f0
+--- /dev/null
++++ b/src/driver/drv_esphome_serial_proxy.h
+@@ -0,0 +1,35 @@
++#pragma once
++
++#include "../obk_config.h"
++
++#if ENABLE_DRIVER_ESPHOME_SERIAL_PROXY
++
++#include <stdint.h>
++#include <stdbool.h>
++
++// ESPHome native API serial proxy messages
++#define ESPHOME_MSG_SerialProxyConfigureRequest 138
++#define ESPHOME_MSG_SerialProxyDataReceived 139
++#define ESPHOME_MSG_SerialProxyWriteRequest 140
++#define ESPHOME_MSG_SerialProxySetModemPinsRequest 141
++#define ESPHOME_MSG_SerialProxyGetModemPinsRequest 142
++#define ESPHOME_MSG_SerialProxyGetModemPinsResponse 143
++#define ESPHOME_MSG_SerialProxyRequest 144
++#define ESPHOME_MSG_SerialProxyRequestResponse 147
++#define ESPHOME_MSG_SerialProxySetModeRequest 152
++
++void DRV_ESPHome_SerialProxy_Init(void);
++void DRV_ESPHome_SerialProxy_Deinit(void);
++
++// ESPHome API server thread: returns true when the message was a serial proxy one.
++bool ESPHome_SerialProxy_Process(int client_sock, uint32_t type, const uint8_t* payload, uint32_t size);
++// Encodes this driver's SerialProxyInfo into out (>= 32 bytes); 0 when the driver is not running.
++int ESPHome_SerialProxy_EncodeInfo(uint8_t* out);
++void ESPHome_SerialProxy_OnClientGone(void);
++bool ESPHome_SerialProxy_IsSubscribed(void);
++
++// From drv_uart_tcp.c: UART0 is shared with the TCP bridge.
++bool UART_TCP_HasClient(void);
++bool UART_TCP_IsRunning(void);
++
++#endif
+diff --git a/src/driver/drv_local.h b/src/driver/drv_local.h
+index 67f26fc..745a401 100644
+--- a/src/driver/drv_local.h
++++ b/src/driver/drv_local.h
+@@ -369,6 +369,8 @@ void TinyIR_NEC_RunFrame();
+ void DRV_ESPHome_API_Init();
+ void DRV_ESPHome_API_Deinit();
+ void DRV_ESPHome_API_OnEverySecond();
++void DRV_ESPHome_SerialProxy_Init(void);
++void DRV_ESPHome_SerialProxy_Deinit(void);
+ 
+ void IR_Proxy_Init();
+ void IR_Proxy_Deinit();
+diff --git a/src/driver/drv_main.c b/src/driver/drv_main.c
+index bebd042..139e7c0 100644
+--- a/src/driver/drv_main.c
++++ b/src/driver/drv_main.c
+@@ -180,6 +180,22 @@ static driver_t g_drivers[] = {
+ 	false,                                   // loaded
+ 	},
+ #endif
++#if ENABLE_DRIVER_ESPHOME_SERIAL_PROXY
++	//drvdetail:{"name":"ESPHomeSerial",
++	//drvdetail:"title":"ESPHome serial proxy",
++	//drvdetail:"descr":"Exposes UART0 as an ESPHome API serial proxy port (for ZHA with an EZSP radio), acknowledging ASH frames on the device in PROTOCOL mode.",
++	//drvdetail:"requires":"ESPHomeAPI"}
++	{ "ESPHomeSerial",                       // Driver Name
++	DRV_ESPHome_SerialProxy_Init,            // Init
++	NULL,                                    // onEverySecond
++	NULL,                                    // appendInformationToHTTPIndexPage
++	NULL,                                    // runQuickTick
++	DRV_ESPHome_SerialProxy_Deinit,          // stopFunction
++	NULL,                                    // onChannelChanged
++	NULL,                                    // onHassDiscovery
++	false,                                   // loaded
++	},
++#endif
+ #if ENABLE_DRIVER_XIAOMI_COMPACT4
+ 	//drvdetail:{"name":"XiaomiCompact4",
+ 	//drvdetail:"title":"Xiaomi Smart Air Purifier 4 Compact",
 diff --git a/src/driver/drv_mdns.c b/src/driver/drv_mdns.c
 index b29d900..c53a3e7 100644
 --- a/src/driver/drv_mdns.c
@@ -225,16 +1110,106 @@ index b29d900..c53a3e7 100644
  
  #include "lwip/apps/mdns_opts.h"
  
+diff --git a/src/driver/drv_uart_tcp.c b/src/driver/drv_uart_tcp.c
+index 6e6677b..9b2c762 100644
+--- a/src/driver/drv_uart_tcp.c
++++ b/src/driver/drv_uart_tcp.c
+@@ -7,6 +7,7 @@
+ #include "errno.h"
+ #include <lwip/sockets.h>
+ #include "drv_uart.h"
++#include "drv_esphome_serial_proxy.h"
+ 
+ #if ENABLE_DRIVER_UART_TCP
+ 
+@@ -33,10 +34,23 @@ static xTaskHandle g_rx_thread = NULL;
+ static xTaskHandle g_tx_thread = NULL;
+ static bool rx_closed, tx_closed;
+ static byte* g_utcpBuf = 0;
++// A TCP client currently holds the UART (the ESPHome serial proxy checks this)
++static volatile bool g_client_active = false;
++static volatile bool g_running = false;
+ 
+ void Start_UART_TCP(void* arg);
+ void UART_TCP_Deinit();
+ 
++bool UART_TCP_HasClient(void)
++{
++	return g_client_active;
++}
++
++bool UART_TCP_IsRunning(void)
++{
++	return g_running;
++}
++
+ static void UTCP_TX_Thd(void* param)
+ {
+ 	int client_fd = *(int*)param;
+@@ -197,8 +211,18 @@ void UART_TCP_TRX_Thread()
+ 		struct sockaddr_storage source_addr;
+ 		socklen_t addr_len = sizeof(source_addr);
+ 		client_sock = accept(listen_sock, (struct sockaddr*)&source_addr, &addr_len);
++#if ENABLE_DRIVER_ESPHOME_SERIAL_PROXY
++		if(client_sock != INVALID_SOCK && ESPHome_SerialProxy_IsSubscribed())
++		{
++			// The ESPHome serial proxy holds the radio; two hosts must not share it.
++			ADDLOG_INFO(LOG_FEATURE_DRV, "UART TCP: refused, the ESPHome serial proxy holds the UART");
++			close(client_sock);
++			client_sock = INVALID_SOCK;
++		}
++#endif
+ 		if(client_sock != INVALID_SOCK)
+ 		{
++			g_client_active = true;
+ 			if(g_conn_channel >= 0) CHANNEL_Set(g_conn_channel, 1, CHANNEL_SET_FLAG_SKIP_MQTT | CHANNEL_SET_FLAG_SILENT);
+ 			rx_closed = true;
+ 			tx_closed = true;
+@@ -240,6 +264,7 @@ void UART_TCP_TRX_Thread()
+ 				if(tx_closed && rx_closed)
+ 				{
+ 					close(client_sock);
++					g_client_active = false;
+ 					ADDLOG_DEBUG(LOG_FEATURE_DRV, "UART TCP connection closed", err);
+ 					if(g_conn_channel >= 0) CHANNEL_Set(g_conn_channel, 0, CHANNEL_SET_FLAG_SKIP_MQTT | CHANNEL_SET_FLAG_SILENT);
+ 					break;
+@@ -255,6 +280,7 @@ void UART_TCP_TRX_Thread()
+ 	}
+ 
+ error:
++	g_client_active = false;
+ 	ADDLOG_ERROR(LOG_FEATURE_DRV, "UART TCP Error");
+ 
+ 	if(g_start_thread != NULL)
+@@ -307,6 +333,7 @@ void UART_TCP_Init()
+ 
+ 	UART_InitUART(g_baudRate, 0, flowcontrol > 0 ? true : false);
+ 	UART_InitReceiveRingBuffer(buf_size * 2);
++	g_running = true;
+ 
+ 	if(g_start_thread != NULL)
+ 	{
+@@ -325,6 +352,8 @@ void UART_TCP_Init()
+ 
+ void UART_TCP_Deinit()
+ {
++	g_running = false;
++	g_client_active = false;
+ 	if(g_trx_thread != NULL)
+ 	{
+ 		rtos_delete_thread(&g_trx_thread);
 diff --git a/src/obk_config.h b/src/obk_config.h
-index 0481067..dcbb72d 100644
+index 0481067..84cb95a 100644
 --- a/src/obk_config.h
 +++ b/src/obk_config.h
-@@ -617,6 +617,10 @@
+@@ -617,6 +617,12 @@
  #undef NO_CHIP_TEMPERATURE
  #endif
  
 +#if PLATFORM_RTL8720D
 +#define ENABLE_DRIVER_MDNS 1
++// ESPHome API serial proxy for the EZSP radio on UART0, with ASH acknowledgements
++#define ENABLE_DRIVER_ESPHOME_SERIAL_PROXY 1
 +#endif
 +
  #if PLATFORM_RTL8720D || PLATFORM_RTL8721DA

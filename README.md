@@ -113,7 +113,7 @@ As referências W e Z foram atribuídas durante as medições. Use a mesma orien
 
 ## Comunicação entre o Wi‑Fi e o Zigbee
 
-Esta é a UART interna usada pela ponte do OpenBeken. A consulta local ao ZS3L funcionou a **115200 baud com RTS/CTS** e identificou **EmberZNet 6.5.5.0, build 432**, em modo coordenador. A correspondência da tabela vem dos datasheets e do código do OpenBeken. A ponte foi testada em conjunto, sem medir a continuidade de cada trilha.
+Esta é a UART interna usada pela ponte do OpenBeken. A consulta local ao ZS3L funcionou a **115200 baud com RTS/CTS** e identificou **EmberZNet 6.5.5.0, build 432**, em modo coordenador. Os dois fios de dados foram confirmados por continuidade em 25/11/2026: **Z6 (PD00) ↔ W8 (PA19, RX0)** e **Z7 (PD01) ↔ W13 (PA18, TX0)**, sem ligação entre W8 e W13. A placa usa os pinos do modo gateway do datasheet, e não o PA05/PA06 padrão do módulo. O RTS/CTS segue o datasheet e não foi medido.
 
 | WBRG1 | ZS3L no modo gateway | Função |
 |---|---|---|
@@ -122,7 +122,87 @@ Esta é a UART interna usada pela ponte do OpenBeken. A consulta local ao ZS3L f
 | PA16 / RTS0 | PA03 / UART_CTS | Controle de fluxo |
 | PA17 / CTS0 | PA04 / UART_RTS | Controle de fluxo |
 
-Os logs do firmware original identificam **PB4** como controle de boot do Zigbee. A análise do código indica **PA28** como provável reset do ZS3L. Essas duas ligações físicas ainda precisam de confirmação antes de acionar os sinais.
+Os logs do firmware original identificam **PB4** como controle de boot do Zigbee, e a análise do código indicava **PA28** como reset do ZS3L. As duas ligações foram confirmadas por continuidade, com a placa desligada:
+
+| WBRG1 | Ref. | ZS3L | Ref. | Função no ZS3L |
+|---|---|---|---|---|
+| PA28 (pino 3) | W7 | RST (pino 1) | Z9 | Reset, ativo em nível baixo |
+| PB4 (pino 7) | W3 | PC01 / Bootload (pino 2) | Z10 | Entra no bootloader se estiver em nível baixo quando o reset é solto |
+
+Desenhos das duas pinagens na orientação da placa, com o que foi medido: [WBRG1](docs/pinagem-wbrg1.svg) e [ZS3L](docs/pinagem-zs3l.svg).
+
+### Pinos do ZS3L nas referências Z
+
+A numeração oficial vem do datasheet da Tuya. A posição na placa foi confirmada pelos GND (Z8, Z17 e Z19) e pelo 3V3 (Z16 ligado a Z22).
+
+| Ref. | Pino | Função | Ref. | Pino | Função |
+|---|---|---|---|---|---|
+| Z9 | 1 | RST | Z1 | 16 | TXD (PA05) |
+| Z10 | 2 | PC01 / Bootload | Z2 | 15 | RXD (PA06) |
+| Z11 | 3 | RST1, desconectado | Z3 | 14 | PB01 |
+| Z12 | 4 | PC00 | Z4 | 13 | PB00 |
+| Z13 | 5 | PA00 | Z5 | 12 | PC02 |
+| Z14 | 6 | PA03, CTS no modo gateway | Z6 | 11 | PD00, TX no modo gateway |
+| Z15 | 7 | PA04, RTS no modo gateway | Z7 | 10 | PD01, RX no modo gateway |
+| Z16 | 8 | 3V3 | Z8 | 9 | GND |
+
+### Entrada no bootloader do ZS3L pela rede
+
+Testado no hub em 25/11/2026, sem gravar nada no rádio. Com o **PB4 em nível baixo** e um pulso de **0,5 s** em nível baixo no PA28, o ZS3L respondeu pela ponte da porta 8888 com o menu `Gecko Bootloader v1.9.2` (`1. upload gbl`, `2. run`, `3. ebl info`). Com o PB4 em nível alto, o mesmo pulso reinicia o firmware normal. Isso segue o datasheet. Na placa irmã do projeto `zs3l-ncp-flash-over-network`, o nível era o contrário.
+
+Comandos do OpenBeken usados (índice do PB4 = 36, do PA28 = 28):
+
+1. `uartInit 115200`: a UART sem controle de fluxo, que o bootloader não usa.
+2. `backlog setChannel 21 1; setPinChannel 28 21; setPinRole 28 Rel; setChannel 20 1; setPinChannel 36 20; setPinRole 36 Rel`
+3. `setChannel 20 0`, depois `setChannel 21 0`, meio segundo de espera, e `setChannel 21 1`. Dois `setChannel` seguidos num mesmo `backlog` geram um pulso curto demais.
+4. Para sair: `setChannel 20 1` e o mesmo pulso de reset. Depois `setPinRole 36 None`, `setPinRole 28 None` e `restart`, para a ponte voltar com RTS/CTS pelo `autoexec.bat`.
+
+O [gravar_zs3l.py](src/zs3l-project/gravar_zs3l.py) faz esse procedimento e envia o `.gbl` por XMODEM‑CRC pela ponte.
+
+### Coordenador do Zigbee2MQTT da casa
+
+Desde 25/11/2026, o hub é o coordenador da rede Zigbee da casa. A rede é a do Zigbee2MQTT 2.14.2 (canal 15, PAN `0xDA05`, 9 dispositivos Tuya), que antes usava um ESP32‑C6 com o adaptador `zboss`. O Zigbee2MQTT roda em Docker (`zigbee2mqtt-coex`) no host do Home Assistant. A configuração passou a ser:
+
+```yaml
+serial:
+  port: tcp://192.168.3.143:8888
+  adapter: ember
+```
+
+O adaptador `ember` do zigbee-herdsman 11.0.0 recusa backups de outra pilha (`[BACKUP] Current backup file is not for EmberZNet stack`). O `coordinator_backup.json` do ZBOSS foi adaptado com três mudanças:
+
+- `metadata.internal.ezspVersion = 13`;
+- `stack_specific.ezsp.hashed_tclk` aleatório, porque os dispositivos do backup não têm chave de link própria;
+- contador de quadros da chave de rede +100.000, porque o backup era de 1,5 h antes da troca e o `formNetwork` usa o valor sem margem.
+
+Com isso, o herdsman montou a rede a partir do backup (`FORM_BACKUP`), com o IEEE do próprio hub (`0x6ce4a4fffeaf615c`), sem gravação permanente. Os 9 dispositivos voltaram em alguns minutos. O LQI subiu de no máximo ~70 com o C6 para 120 a 196. O original ficou como `coordinator_backup.zboss-original.json` na pasta de dados do Zigbee2MQTT.
+
+Para voltar ao C6: religar o C6, restaurar o `coordinator_backup.zboss-original.json` e repor `adapter: zboss` com `port: tcp://127.0.0.1:6638`.
+
+O pedido `zigbee2mqtt/bridge/request/restart` deixou o Zigbee2MQTT parado com o ZBOSS: ele não reconectou ao C6 sem reset do rádio. Evite reinícios pelo MQTT nessa combinação.
+
+### Firmware do ZS3L: EmberZNet 7.4.3 com os pinos desta placa
+
+O ZS3L roda o **EmberZNet 7.4.3 (EZSP 13)** desde 25/11/2026. O bellows conversa com ele pela ponte da porta 8888, a 115200 com RTS/CTS, e lê o mesmo EUI64 (`6c:e4:a4:ff:fe:af:61:5c`). A rede gravada no 6.5.5 não foi preservada.
+
+Os firmwares prontos para o ZS3L usam os pinos padrão do módulo. Esta placa usa os do modo gateway:
+
+| Sinal do rádio | Firmwares prontos | Esta placa |
+|---|---|---|
+| TX | PA06 | PD00 |
+| RX | PA05 | PD01 |
+| CTS | PB01 | PA03 |
+| RTS | PB00 | PA04 |
+
+O [corrigir_pinos_743.py](src/zs3l-project/corrigir_pinos_743.py) parte do `ncp-uart-zs3l-hw-115200-7.4.3-12.5.gbl` e troca 7 bytes da estrutura de inicialização do UARTDRV, mais as três instruções que leem o pino do RTS. Ele confere os bytes originais e recalcula o CRC do GBL. A aplicação não tem assinatura nem CRC próprio. O arquivo gerado, `ncp-uart-zs3l-jm-smwg01-pd00-pd01-hw-115200-7.4.3.gbl`, tem SHA‑256 `c9d97a3ce9581a09818ecb2b8c43b9631eb97eec06a34941c794c2a3f1d39d00`.
+
+Nesse firmware, o bellows informa que o IEEE só pode ser gravado de forma permanente (`can_burn_userdata_custom_eui64`), e não regravado.
+
+Antes dele, o `zs3l_zigbee_ncp_8.2.2.0_115200.gbl` do projeto `dzerik/zs3l-ncp-flash-over-network` foi gravado e não respondeu em nenhuma velocidade: ele usa os pinos padrão. Esse teste sobrescreveu o EmberZNet 6.5.5 original, do qual não havia cópia.
+
+Na `1.18.321-mdns6`, `stopDriver uarttcp` seguido de `startDriver uarttcp` reinicia o hub pelo watchdog de hardware. Use `uartInit` para trocar o controle de fluxo sem reiniciar a ponte.
+
+A borda direita traz os pinos de gravação, numerados de baixo para cima: Z17 = 22 (GND), Z18 = 21 (RST2), Z19 = 20 (GND), Z20 = 19 (SWCLK), Z21 = 18 (SWDIO), Z22 = 17 (3V3). Com SWDIO, SWCLK, RST2 e GND dá para recuperar o rádio com um gravador SWD.
 
 ## P2 e P3
 

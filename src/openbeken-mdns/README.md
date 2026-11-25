@@ -40,11 +40,39 @@ descoberto e recusa a conexão quando o `HelloResponse` traz outro nome.
 O `friendly_name` continua sendo o nome configurado no OpenBeken. Sem
 o responder mDNS ativo, a API volta a usar o nome do OpenBeken.
 
+## Proxy serial do ESPHome (mdns6)
+
+A `1.18.321-mdns6` acrescenta o driver `ESPHomeSerial`
+(`drv_esphome_serial_proxy.c`). Ele expõe a UART0 do ZS3L como a porta
+`zigbee` do proxy serial da API nativa do ESPHome, que o ZHA usa pelo
+endereço `esphome-hass://`. O bellows abre essa porta em modo PROTOCOL e
+deixa de enviar os ACKs do ASH. O hub passa a confirmar os quadros DATA
+do rádio localmente, então o tempo limite de ACK do rádio não depende do
+Wi-Fi. O RTS/CTS fica sempre ligado, porque os fios existem na placa.
+
+Para isso a API anuncia a versão 1.17, responde ao
+`DeviceCapabilitiesRequest` (proxy Bluetooth e porta serial) e declara
+a porta também no `DeviceInfoResponse`. A ponte `uarttcp` e o proxy
+serial se excluem: com um cliente na porta 8888, a assinatura da porta
+serial recebe `PORT_IN_USE`, e vice-versa. O comando `ESPHomeSerialStatus`
+escreve no log o estado e os contadores de bytes e de ACKs.
+
+A lógica do ACK foi comparada com o bellows 1.2.1 em 11 casos, num
+programa de teste no PC. No hub, o
+[testar_proxy_serial.py](testar_proxy_serial.py) abriu a porta em modo
+PROTOCOL, leu o EmberZNet 6.5.5 e completou 50 comandos com 57 ACKs do
+hub e nenhum byte perdido. Depois, o ZHA usou a porta com o EmberZNet
+7.4.3, sem perdas.
+
+Problema conhecido: `stopDriver uarttcp` seguido de `startDriver
+uarttcp` reinicia o hub pelo watchdog de hardware. Use `uartInit` para
+trocar a configuração da UART sem reiniciar a ponte.
+
 ## Imagem OTA
 
 A imagem compilada fica em
 [outputs/OpenBeken-mdns](../../outputs/OpenBeken-mdns/). Para atualizar
-o WBRG1, use o arquivo `OpenRTL8720D_1.18.321-mdns5_ota.img` no painel
+o WBRG1, use o arquivo `OpenRTL8720D_1.18.321-mdns6_ota.img` no painel
 OTA do OpenBeken. A imagem atualiza o WBRG1. O firmware do rádio ZS3L
 fica na flash do próprio rádio.
 
@@ -67,10 +95,10 @@ git submodule update --init sdk/OpenRTL8720D
 patch_dir=/caminho/absoluto/para/src/openbeken-mdns
 git apply "$patch_dir/openbeken.patch"
 git -C sdk/OpenRTL8720D apply "$patch_dir/realtek-sdk.patch"
-make -j4 APP_VERSION=1.18.321-mdns5 APP_NAME=OpenRTL8720D VARIANT=default OpenRTL8720D
+make -j4 APP_VERSION=1.18.321-mdns6 APP_NAME=OpenRTL8720D VARIANT=default OpenRTL8720D
 ```
 
-O arquivo OTA sai em `output/1.18.321-mdns5/`. O patch da `mdns4` só
+O arquivo OTA sai em `output/1.18.321-mdns6/`. O patch da `mdns4` só
 se aplica à tag `1.18.321` e está no histórico do repositório.
 
 ## Verificação

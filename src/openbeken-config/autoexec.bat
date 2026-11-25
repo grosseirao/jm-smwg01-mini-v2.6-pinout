@@ -18,3 +18,8 @@ BTInit
 delay_s 8
 BTStartScan
 startDriver ESPHomeAPI
+
+// Zigbee UART0 as the ESPHome serial proxy port "zigbee" (needs 1.18.321-mdns6).
+// ZHA reaches it through the ESPHome integration; the hub acknowledges ASH frames.
+// Only one of this and uarttcp can hold the radio at a time.
+startDriver ESPHomeSerial
